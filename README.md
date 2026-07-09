@@ -42,8 +42,11 @@ human-readable label, validity via optional absolute `exp`/`nbf` (absent
 
 ## Extensions
 
-Tokens carry named extension claims — signed, typed payloads under the `ext`
-field. Transport authorization is built on them:
+All authorization rides named extension claims: signed, typed payloads under
+the token's `ext` field. An extension is any struct with an
+`ExtensionName() string` method; valiss signs and transports it opaquely,
+and the same concrete type comes back out on the server. Transport
+authorization is built on this mechanism:
 
 - `contrib/httpauth` defines `Ext{Hosts, Methods, Paths}` (name `http`): the
   middleware rejects requests outside the extension's bounds with 403.
@@ -51,27 +54,36 @@ field. Transport authorization is built on them:
   reject methods outside the extension with PermissionDenied.
 
 Extensions present on both chain levels are both enforced, so an
-account-level extension bounds every user of the account. Consumers add
-their own domain claims the same way:
+account-level extension bounds every user of the account.
+
+Domain claims work the same way. Define the type, mint it into the token,
+recover it in the handler:
 
 ```go
-tok, _ := valiss.IssueUser(account, "alice", alicePub, nil,
-    grpcauth.WithExt(grpcauth.Ext{Methods: []string{"/example.v1.Widgets/*"}}),
-    valiss.WithExtension("acme.example", myClaims{Plan: "pro"}),
+// The set of filters this application enforces on data queries.
+type QueryFilters struct {
+    Regions []string `json:"regions"`
+}
+
+func (QueryFilters) ExtensionName() string { return "acme.filters" }
+
+// Mint: transport bounds plus domain claims, typed end to end.
+tok, _ := valiss.IssueUser(account, "alice", alicePub,
+    valiss.WithExtension(grpcauth.Ext{Methods: []string{"/example.v1.Widgets/*"}}),
+    valiss.WithExtension(QueryFilters{Regions: []string{"eu"}}),
     valiss.WithTTL(time.Hour),
 )
 
-verifier := valiss.NewVerifier(operatorPub, allowlist,
-    valiss.WithClaimsValidator(valiss.ExtValidator("acme.example",
-        func(req valiss.Request, c *valiss.Claims, acct, user myClaims) error {
-            // domain-specific checks
-            return nil
-        })),
-)
+// Handler: the concrete type back, no string plumbing.
+id, _ := valiss.IdentityFromContext(ctx)
+filters, ok, err := valiss.ExtOf[QueryFilters](id.User.Ext)
 ```
 
-Generic string scopes also exist (`Claims.Scopes`, user clamped to account);
-the library assigns them no meaning beyond the subset rule.
+Optionally validate extensions at auth time instead of in handlers:
+`valiss.WithExtensionType[QueryFilters]()` on the verifier rejects requests
+whose tokens carry a malformed `acme.filters` claim, and
+`valiss.ExtValidator(func(req, id, acct, user QueryFilters) error { ... })`
+runs typed domain checks inside the verification pipeline.
 
 Bearer credentials: a user token minted with `valiss.WithBearer()`
 authenticates without a per-request signature (token-only, replayable);
@@ -81,7 +93,7 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
 
 - root (`github.com/mikluko/valiss`) — token issue/verify (account and user
   level), request sign/verify, allowlist, the request `Verifier`, extension
-  plumbing, and `TenantFromContext`
+  plumbing, and `IdentityFromContext`
 - `creds` — client creds file (tokens + seed, nsc style)
 - `contrib/httpauth` — net/http middleware, client transport, HTTP extension
 - `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
@@ -100,8 +112,9 @@ srv := grpc.NewServer(
     grpc.StreamInterceptor(auth.StreamInterceptor()),
 )
 // in a handler:
-claims, _ := valiss.TenantFromContext(ctx) // claims.TenantID segments data,
-                                           // claims.UserID names the end user
+id, _ := valiss.IdentityFromContext(ctx) // id.Account.Name segments data,
+                                         // id.User names the end user (nil
+                                         // for account-level requests)
 ```
 
 Client (gRPC):

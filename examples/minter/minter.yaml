@@ -33,41 +33,28 @@ accounts:
   # its users' tokens.
   - name: acme              # tenant name; segments all stored data
     key: AC4BYRVFUKRB7R4QEHSQFGV7R6HDIAMGR2C6GPAOUD3BANKQ4G44JQU4
-    # Scopes are consumer-defined strings (prefix wildcards supported); the
-    # library only clamps user scopes to the account's. Transport-level
-    # authorization uses typed extensions issued programmatically.
-    scopes:
-      - call:/example.v1.WidgetService/*
     # Validity boundaries are absolute RFC3339 timestamps, so re-minting is
     # deterministic. Omitted expires = the token never expires (nsc default);
-    # omitted not_before = valid immediately.
+    # omitted not_before = valid immediately. Authorization lives in typed
+    # extension claims, which are a programmatic-issuance feature; this tool
+    # mints plain identity tokens.
     expires: 2026-08-08T00:00:00Z
     users:
-      # Users hold a subset of the account scopes; the server clamps them
-      # at verification too.
       - name: alice
         key: UDT3JMUJSPJR6KQOQ33JMFK44T4TTQWF4X35RFHI62WAWWQOXYSKEDH7
-        scopes:
-          - call:/example.v1.WidgetService/GetWidget
         expires: 2026-07-16T00:00:00Z
         not_before: 2026-07-09T00:00:00Z
-      # No key: a fresh pair is generated on every `valiss creds acme/bob`,
+      # No key: a fresh pair is generated on every `minter creds acme/bob`,
       # and the seed ships inside the creds.
       - name: bob
-        scopes:
-          - call:/example.v1.WidgetService/GetWidget
       # Bearer: token-only credential that cannot sign requests; no seed is
       # handed out (a keyless entry gets a throwaway pair at mint time).
       # Replayable until expiry; keep the window short.
       - name: carol
         bearer: true
-        scopes:
-          - call:/example.v1.WidgetService/ListWidgets
         expires: 2026-07-10T00:00:00Z
 
   # No account key: a fresh pair is generated per mint. Such an account
   # cannot have users minted from this manifest (its signing seed has no
   # stable VALISS_SEED_ name).
   - name: globex
-    scopes:
-      - call:*              # everything

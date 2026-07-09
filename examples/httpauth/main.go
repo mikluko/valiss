@@ -20,6 +20,15 @@ import (
 	"github.com/mikluko/valiss/creds"
 )
 
+// queryFilters is a domain-specific extension: the set of filters the
+// handler enforces on data queries. valiss signs and transports it opaquely;
+// only this application assigns it meaning.
+type queryFilters struct {
+	Regions []string `json:"regions"`
+}
+
+func (queryFilters) ExtensionName() string { return "example.filters" }
+
 func main() {
 	// Operator side: mint the trust anchor, a tenant account key, and an
 	// account token bound to GET requests under /v1/ by the HTTP extension.
@@ -34,8 +43,9 @@ func main() {
 	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := valiss.Issue(operator, "acme", accountPub, nil,
-		httpauth.WithExt(httpauth.Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
+	tok, err := valiss.Issue(operator, "acme", accountPub,
+		valiss.WithExtension(httpauth.Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
+		valiss.WithExtension(queryFilters{Regions: []string{"eu", "us"}}),
 		valiss.WithTTL(time.Hour),
 	)
 	check(err)
@@ -47,11 +57,17 @@ func main() {
 	// server needs; it never sees any seeds.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
-		// The middleware injected the verified tenant; the handler reads it
-		// for logging and data segmentation.
-		c, _ := valiss.TenantFromContext(r.Context())
-		log.Printf("tenant %q calls %s", c.TenantID, r.URL.Path)
-		fmt.Fprintf(w, "hello, tenant %q\n", c.TenantID)
+		// The middleware injected the verified identity; the handler reads
+		// it for logging and data segmentation, and decodes the domain
+		// extension it enforces on queries.
+		id, _ := valiss.IdentityFromContext(r.Context())
+		filters, ok, err := valiss.ExtOf[queryFilters](id.Account.Ext)
+		if err != nil || !ok {
+			http.Error(w, "no query filters delegated", http.StatusForbidden)
+			return
+		}
+		log.Printf("tenant %q calls %s with region filters %v", id.Account.Name, r.URL.Path, filters.Regions)
+		fmt.Fprintf(w, "hello, tenant %q; your queries are filtered to regions %v\n", id.Account.Name, filters.Regions)
 	})
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "admin area\n")

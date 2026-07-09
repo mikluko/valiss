@@ -85,24 +85,18 @@ operator: `+f.opPub+`
 accounts:
   - name: acme
     key: `+f.acctPub+`
-    scopes: ["call:/pkg.Svc/*"]
     expires: `+f.acctExpires.Format(time.RFC3339)+`
     users:
       - name: alice
         key: `+f.userPub+`
-        scopes: ["call:/pkg.Svc/Get"]
       - name: bob
-        scopes: ["call:/pkg.Svc/Get"]
         expires: `+f.bobExpires.Format(time.RFC3339)+`
       - name: carol
         bearer: true
-        scopes: ["call:/pkg.Svc/Get"]
   - name: globex
-    scopes: ["call:*"]
     users:
       - name: eve
         bearer: true
-        scopes: ["call:*"]
 `), 0o600))
 	return f
 }
@@ -131,9 +125,8 @@ func TestCredsAccount(t *testing.T) {
 
 	claims, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
-	assert.Equal(t, "acme", claims.TenantID)
-	assert.Equal(t, f.acctPub, claims.PubKey)
-	assert.True(t, claims.Authorizes("call:/pkg.Svc/M"))
+	assert.Equal(t, "acme", claims.Name)
+	assert.Equal(t, f.acctPub, claims.Subject)
 
 	assert.Equal(t, claims.ID, meta.Account.JTI, "metadata jti matches the token for the server allowlist")
 	assert.False(t, meta.Account.Generated)
@@ -156,7 +149,7 @@ func TestCredsGeneratedAccount(t *testing.T) {
 
 	claims, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
-	assert.Equal(t, pub, claims.PubKey, "token binds the freshly generated key")
+	assert.Equal(t, pub, claims.Subject, "token binds the freshly generated key")
 	assert.True(t, meta.Account.Generated)
 	assert.Equal(t, pub, meta.Account.Key)
 
@@ -179,15 +172,15 @@ func TestCredsUser(t *testing.T) {
 
 	user, err := valiss.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", user.TenantID)
-	assert.Equal(t, f.userPub, user.PubKey)
+	assert.Equal(t, "alice", user.Name)
+	assert.Equal(t, f.userPub, user.Subject)
 
 	assert.Nil(t, meta.Account)
 	require.NotNil(t, meta.User)
 	assert.Equal(t, user.ID, meta.User.JTI)
 
 	// A server with the account token in static configuration accepts it.
-	acctTok, err := valiss.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	acct, err := valiss.VerifyAccount(acctTok, f.opPub)
 	require.NoError(t, err)
@@ -199,10 +192,11 @@ func TestCredsUser(t *testing.T) {
 	require.NoError(t, err)
 	ts, sig, err := valiss.SignRequest(kp, time.Now())
 	require.NoError(t, err)
-	claims, err := v.VerifyRequest(valiss.Request{UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
+	id, err := v.VerifyRequest(valiss.Request{UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)
-	assert.Equal(t, "acme", claims.TenantID)
-	assert.Equal(t, "alice", claims.UserID)
+	assert.Equal(t, "acme", id.Account.Name)
+	require.NotNil(t, id.User)
+	assert.Equal(t, "alice", id.User.Name)
 }
 
 func TestCredsUserBundle(t *testing.T) {
@@ -230,10 +224,11 @@ func TestCredsUserBundle(t *testing.T) {
 	require.NoError(t, err)
 	ts, sig, err := valiss.SignRequest(kp, time.Now())
 	require.NoError(t, err)
-	claims, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
+	id, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)
-	assert.Equal(t, "acme", claims.TenantID)
-	assert.Equal(t, "alice", claims.UserID)
+	assert.Equal(t, "acme", id.Account.Name)
+	require.NotNil(t, id.User)
+	assert.Equal(t, "alice", id.User.Name)
 
 	t.Run("requires the operator seed", func(t *testing.T) {
 		t.Setenv("VALISS_SEED_"+f.opPub, "")
@@ -268,7 +263,7 @@ func TestCredsGeneratedUser(t *testing.T) {
 	require.NoError(t, err)
 	pub, err := kp.PublicKey()
 	require.NoError(t, err)
-	assert.Equal(t, pub, user.PubKey)
+	assert.Equal(t, pub, user.Subject)
 
 	expires, err := time.Parse(time.RFC3339, meta.User.Expires)
 	require.NoError(t, err)
@@ -292,10 +287,11 @@ func TestCredsBearerUser(t *testing.T) {
 	acct, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	v := valiss.NewVerifier(f.opPub, valiss.NewStaticAllowlist(acct.ID))
-	claims, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken})
+	id, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken})
 	require.NoError(t, err)
-	assert.Equal(t, "carol", claims.UserID)
-	assert.True(t, claims.Bearer)
+	require.NotNil(t, id.User)
+	assert.Equal(t, "carol", id.User.Name)
+	assert.True(t, id.User.Bearer)
 }
 
 func TestCredsFailures(t *testing.T) {
@@ -373,19 +369,15 @@ operator: `+opPub+`
 accounts:
   - name: acme
     key: `+acctPub+`
-    scopes: ["call:/svc/*"]
     expires: 2027-01-01T00:00:00Z
     users:
       - name: alice
         key: `+userPub+`
-        scopes: ["call:/svc/Get"]
         expires: 2026-08-01T00:00:00Z
         not_before: 2026-07-01T00:00:00Z
       - name: carol
         bearer: true
-        scopes: ["call:/svc/Get"]
   - name: globex
-    scopes: ["call:*"]
 `))
 	require.NoError(t, err)
 	assert.Equal(t, opPub, m.Operator)
@@ -446,7 +438,7 @@ operator: ` + opPub,
 			name: "account without name",
 			yaml: `
 operator: ` + opPub + `
-accounts: [{scopes: ["call:*"]}]`,
+accounts: [{key: ` + acctPub + `}]`,
 			wantErr: "name is required",
 		},
 		{
@@ -468,13 +460,6 @@ accounts: [{name: acme, key: ` + userPub + `}]`,
 			yaml: `
 operator: ` + opPub + `
 accounts: [{name: acme, expires: 720h}]`,
-			wantErr: "parse",
-		},
-		{
-			name: "string scopes rejected",
-			yaml: `
-operator: ` + opPub + `
-accounts: [{name: acme, scopes: "call:*"}]`,
 			wantErr: "parse",
 		},
 		{
@@ -501,7 +486,6 @@ operator: ` + opPub + `
 accounts:
   - name: acme
     key: ` + acctPub + `
-    scopes: ["call:*"]
     users: [{name: alice, key: ` + acctPub + `}]`,
 			wantErr: "user public key",
 		},
@@ -511,20 +495,8 @@ accounts:
 operator: ` + opPub + `
 accounts:
   - name: acme
-    scopes: ["call:*"]
     users: [{name: alice, bearer: true}, {name: alice, bearer: true}]`,
 			wantErr: "duplicate user name",
-		},
-		{
-			name: "user scope beyond the account scopes",
-			yaml: `
-operator: ` + opPub + `
-accounts:
-  - name: acme
-    key: ` + acctPub + `
-    scopes: ["call:/svc/*"]
-    users: [{name: alice, key: ` + userPub + `, scopes: ["call:/other/Get"]}]`,
-			wantErr: "not covered",
 		},
 	}
 	for _, tt := range tests {

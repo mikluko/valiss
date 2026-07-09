@@ -8,14 +8,11 @@ import (
 	"github.com/mikluko/valiss"
 )
 
-// ExtName is the extension claim name this package issues and enforces.
-const ExtName = "http"
-
 // Ext is the HTTP transport extension claim: it binds a token to specific
 // hosts, methods, and paths. An empty list leaves that dimension
-// unconstrained. The middleware enforces every present extension on both
-// chain levels, so an account-level extension bounds all of the account's
-// users on top of their own.
+// unconstrained. Mint it with valiss.WithExtension(Ext{...}). The middleware
+// enforces every present extension on both chain levels, so an account-level
+// extension bounds all of the account's users on top of their own.
 type Ext struct {
 	// Hosts allowed, matched exactly against the request Host.
 	Hosts []string `json:"hosts,omitempty"`
@@ -26,10 +23,8 @@ type Ext struct {
 	Paths []string `json:"paths,omitempty"`
 }
 
-// WithExt embeds the HTTP extension into a minted token.
-func WithExt(e Ext) valiss.IssueOption {
-	return valiss.WithExtension(ExtName, e)
-}
+// ExtensionName names the claim in the token's ext field.
+func (Ext) ExtensionName() string { return "http" }
 
 // Authorizes reports whether the extension permits the request.
 func (e Ext) Authorizes(r *http.Request) bool {
@@ -47,16 +42,20 @@ func (e Ext) Authorizes(r *http.Request) bool {
 
 // authorizeExt enforces the HTTP extensions a verified request's tokens
 // carry. Tokens without the extension impose no constraint.
-func authorizeExt(claims *valiss.Claims, r *http.Request) error {
-	for _, exts := range []valiss.Extensions{claims.AccountExt, claims.UserExt} {
-		if _, ok := exts[ExtName]; !ok {
-			continue
-		}
-		e, err := valiss.Ext[Ext](exts, ExtName)
+func authorizeExt(id *valiss.Identity, r *http.Request) error {
+	exts := []valiss.Extensions{id.Account.Ext}
+	if id.User != nil {
+		exts = append(exts, id.User.Ext)
+	}
+	for _, e := range exts {
+		ext, ok, err := valiss.ExtOf[Ext](e)
 		if err != nil {
 			return err
 		}
-		if !e.Authorizes(r) {
+		if !ok {
+			continue
+		}
+		if !ext.Authorizes(r) {
 			return fmt.Errorf("valiss: token does not permit %s %s", r.Method, r.URL.Path)
 		}
 	}

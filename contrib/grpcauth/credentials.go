@@ -15,7 +15,7 @@ import (
 // Credentials is a grpc.PerRPCCredentials that attaches the creds' tokens
 // and, when the creds hold a seed, a fresh per-call signature. Creds
 // without a seed are bearer credentials: the server accepts them only when
-// the effective token grants valiss.ScopeBearer. Use
+// the effective token is a bearer user token. Use
 // grpc.WithPerRPCCredentials on the client.
 type Credentials struct {
 	accountToken string

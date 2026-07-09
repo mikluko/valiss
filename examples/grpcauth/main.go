@@ -42,7 +42,7 @@ func main() {
 	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := valiss.Issue(operator, "acme", accountPub, nil, valiss.WithTTL(time.Hour))
+	tok, err := valiss.Issue(operator, "acme", accountPub, valiss.WithTTL(time.Hour))
 	check(err)
 	claims, err := valiss.VerifyAccount(tok, operatorPub)
 	check(err)
@@ -82,8 +82,8 @@ func main() {
 	check(err)
 	userSeed, err := user.Seed()
 	check(err)
-	userTok, err := valiss.IssueUser(account, "alice", userPub, nil,
-		grpcauth.WithExt(grpcauth.Ext{Methods: []string{healthpb.Health_Check_FullMethodName}}),
+	userTok, err := valiss.IssueUser(account, "alice", userPub,
+		valiss.WithExtension(grpcauth.Ext{Methods: []string{healthpb.Health_Check_FullMethodName}}),
 		valiss.WithTTL(time.Hour),
 	)
 	check(err)
@@ -119,14 +119,14 @@ func dial(lis *bufconn.Listener, c creds.Creds) *grpc.ClientConn {
 	return conn
 }
 
-// logTenant shows how a handler-side interceptor reads the authenticated
+// logTenant shows how a handler-side interceptor reads the verified
 // identity for data segmentation.
 func logTenant(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-	if claims, ok := valiss.TenantFromContext(ctx); ok {
-		if claims.UserID != "" {
-			log.Printf("tenant %q user %q calls %s", claims.TenantID, claims.UserID, info.FullMethod)
+	if id, ok := valiss.IdentityFromContext(ctx); ok {
+		if id.User != nil {
+			log.Printf("tenant %q user %q calls %s", id.Account.Name, id.User.Name, info.FullMethod)
 		} else {
-			log.Printf("tenant %q calls %s", claims.TenantID, info.FullMethod)
+			log.Printf("tenant %q calls %s", id.Account.Name, info.FullMethod)
 		}
 	}
 	return handler(ctx, req)

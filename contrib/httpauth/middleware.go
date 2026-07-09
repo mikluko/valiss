@@ -1,8 +1,8 @@
 // Package httpauth wires the tenant authentication scheme into net/http: a
 // server middleware that verifies the per-request credential and enforces
 // the HTTP extension claim (Ext), and a client http.RoundTripper that
-// attaches the credential. Handlers read the authenticated tenant with
-// valiss.TenantFromContext.
+// attaches the credential. Handlers read the verified identity with
+// valiss.IdentityFromContext.
 package httpauth
 
 import (
@@ -37,14 +37,14 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing credentials", http.StatusUnauthorized)
 		return
 	}
-	claims, err := m.verifier.VerifyRequest(req)
+	id, err := m.verifier.VerifyRequest(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if err := authorizeExt(claims, r); err != nil {
+	if err := authorizeExt(id, r); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}
-	m.next.ServeHTTP(w, r.WithContext(valiss.ContextWithTenant(r.Context(), claims)))
+	m.next.ServeHTTP(w, r.WithContext(valiss.ContextWithIdentity(r.Context(), id)))
 }

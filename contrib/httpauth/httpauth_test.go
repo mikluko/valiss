@@ -35,14 +35,25 @@ func tenantKeys(t *testing.T) (nkeys.KeyPair, string, []byte) {
 	return tp, pub, seed
 }
 
-// echoTenant writes the authenticated tenant id back to the client.
+func userKeys(t *testing.T) (nkeys.KeyPair, string, []byte) {
+	t.Helper()
+	up, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	pub, err := up.PublicKey()
+	require.NoError(t, err)
+	seed, err := up.Seed()
+	require.NoError(t, err)
+	return up, pub, seed
+}
+
+// echoTenant writes the authenticated tenant name back to the client.
 func echoTenant(w http.ResponseWriter, r *http.Request) {
-	claims, ok := valiss.TenantFromContext(r.Context())
+	id, ok := valiss.IdentityFromContext(r.Context())
 	if !ok {
-		http.Error(w, "no tenant in context", http.StatusInternalServerError)
+		http.Error(w, "no identity in context", http.StatusInternalServerError)
 		return
 	}
-	io.WriteString(w, claims.TenantID)
+	io.WriteString(w, id.Account.Name)
 }
 
 func newClient(t *testing.T, b creds.Creds) *http.Client {
@@ -55,7 +66,7 @@ func newClient(t *testing.T, b creds.Creds) *http.Client {
 func TestMiddlewareTransport(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, nil, valiss.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
@@ -64,7 +75,7 @@ func TestMiddlewareTransport(t *testing.T) {
 
 	client := newClient(t, creds.Creds{AccountToken: tok, Seed: seed})
 
-	t.Run("authenticated request reaches handler with tenant", func(t *testing.T) {
+	t.Run("authenticated request reaches handler with the identity", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -85,8 +96,8 @@ func TestMiddlewareTransport(t *testing.T) {
 func TestExtEnforcement(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, nil,
-		WithExt(Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
+	tok, err := valiss.Issue(op, "acme", tenantPub,
+		valiss.WithExtension(Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
 		valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
@@ -118,8 +129,8 @@ func TestExtEnforcement(t *testing.T) {
 	})
 
 	t.Run("host outside the extension denied", func(t *testing.T) {
-		bound, err := valiss.Issue(op, "acme", tenantPub, nil,
-			WithExt(Ext{Hosts: []string{"api.example.com"}}), valiss.WithTTL(time.Hour))
+		bound, err := valiss.Issue(op, "acme", tenantPub,
+			valiss.WithExtension(Ext{Hosts: []string{"api.example.com"}}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		resp, err := newClient(t, creds.Creds{AccountToken: bound, Seed: seed}).Get(srv.URL + "/v1/checks")
 		require.NoError(t, err)
@@ -128,19 +139,13 @@ func TestExtEnforcement(t *testing.T) {
 	})
 
 	t.Run("account extension clamps the user", func(t *testing.T) {
-		account, accountPub, acctSeed := tenantKeys(t)
-		_ = acctSeed
-		acctTok, err := valiss.Issue(op, "acme", accountPub, nil,
-			WithExt(Ext{Paths: []string{"/v1/*"}}), valiss.WithTTL(time.Hour))
+		account, accountPub, _ := tenantKeys(t)
+		acctTok, err := valiss.Issue(op, "acme", accountPub,
+			valiss.WithExtension(Ext{Paths: []string{"/v1/*"}}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
-		user, err := nkeys.CreateUser()
-		require.NoError(t, err)
-		userPub, err := user.PublicKey()
-		require.NoError(t, err)
-		userSeed, err := user.Seed()
-		require.NoError(t, err)
-		wide, err := valiss.IssueUser(account, "mallory", userPub, nil,
-			WithExt(Ext{Paths: []string{"/admin/*"}}), valiss.WithTTL(time.Hour))
+		_, userPub, userSeed := userKeys(t)
+		wide, err := valiss.IssueUser(account, "mallory", userPub,
+			valiss.WithExtension(Ext{Paths: []string{"/admin/*"}}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 
 		resp, err := newClient(t, creds.Creds{AccountToken: acctTok, UserToken: wide, Seed: userSeed}).Get(srv.URL + "/admin/panel")
@@ -153,19 +158,16 @@ func TestExtEnforcement(t *testing.T) {
 func TestBearerTransport(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub, _ := tenantKeys(t)
-	user, err := nkeys.CreateUser()
-	require.NoError(t, err)
-	userPub, err := user.PublicKey()
-	require.NoError(t, err)
+	_, userPub, _ := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, "acme", accountPub, []string{"call:*"}, valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
 	t.Run("bearer user token allows token-only request", func(t *testing.T) {
-		bearerTok, err := valiss.IssueUser(account, "carol", userPub, []string{"call:*"}, valiss.WithBearer(), valiss.WithTTL(time.Hour))
+		bearerTok, err := valiss.IssueUser(account, "carol", userPub, valiss.WithBearer(), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		client := newClient(t, creds.Creds{AccountToken: acctTok, UserToken: bearerTok})
 		resp, err := client.Get(srv.URL)
@@ -191,7 +193,7 @@ func TestBearerTransport(t *testing.T) {
 func TestMiddlewareRejections(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, nil, valiss.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := valiss.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
@@ -238,29 +240,25 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 }
 
-// TestUserChain proves user-level creds authenticate through the
-// middleware with the delegated identity.
+// TestUserChain proves user-level creds authenticate through the middleware
+// with the delegated identity.
 func TestUserChain(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub, _ := tenantKeys(t)
-	user, err := nkeys.CreateUser()
-	require.NoError(t, err)
-	userPub, err := user.PublicKey()
-	require.NoError(t, err)
-	userSeed, err := user.Seed()
-	require.NoError(t, err)
+	_, userPub, userSeed := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, "acme", accountPub, nil, valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := valiss.IssueUser(account, "alice", userPub, nil,
-		WithExt(Ext{Paths: []string{"/v1/checks"}}), valiss.WithTTL(time.Hour))
+	userTok, err := valiss.IssueUser(account, "alice", userPub,
+		valiss.WithExtension(Ext{Paths: []string{"/v1/checks"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := valiss.TenantFromContext(r.Context())
+		id, ok := valiss.IdentityFromContext(r.Context())
 		require.True(t, ok)
-		io.WriteString(w, claims.TenantID+"/"+claims.UserID)
+		require.NotNil(t, id.User)
+		io.WriteString(w, id.Account.Name+"/"+id.User.Name)
 	})))
 	defer srv.Close()
 

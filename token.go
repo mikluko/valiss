@@ -3,64 +3,87 @@
 //
 //   - An operator holds an Ed25519 nkey; its public key is the trust anchor
 //     servers pin.
-//   - The operator signs each tenant a scoped account token that the
-//     tenant's own account nkey must back. Issued account tokens are
-//     recorded in a server-side allowlist.
-//   - A tenant may delegate: it signs user tokens with its account seed,
-//     granting end users a subset of its scopes.
+//   - The operator signs each tenant an account token that the tenant's own
+//     account nkey must back. Issued account tokens are recorded in a
+//     server-side allowlist.
+//   - A tenant may delegate: it signs user tokens with its account seed.
 //   - The subject signs every request with its nkey; the server verifies the
 //     token chain up to the pinned operator key, the request signature
 //     against the token's subject key, and the account token against the
-//     allowlist, then hands the tenant (and user) identity to the handler
-//     for data segmentation.
+//     allowlist, then hands the verified identity to the handler for data
+//     segmentation.
 //
 // Tokens are this scheme's own typed claims carried in an nkey-signed JWT:
 // the sub claim is the subject's public key and name carries the
 // human-readable label, as in NATS. Key levels are strict: operator keys
 // (SO.../O...) sign account tokens for account keys (SA.../A...), account
 // keys sign user tokens for user keys (SU.../U...).
+//
+// Authorization rides named extension claims (Extension, WithExtension):
+// typed payloads the scheme signs and transports but assigns no meaning.
+// The contrib transports enforce their extensions (HTTP hosts/methods/paths,
+// gRPC methods); consumers add domain extensions the same way and read them
+// back in handlers with ExtOf.
 package valiss
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nkeys"
 )
 
-// Claims is the verified content of a token.
+// Claims is the verified RFC 7519 registered-claims content of a token.
+// Level-specific data lives on AccountClaims and UserClaims, which embed it.
 type Claims struct {
-	// TenantID identifies the tenant; it segments all stored data.
-	TenantID string
-	// UserID identifies the end user on chain-verified requests, where an
-	// account-signed user token accompanies the account token. Empty when
-	// the tenant itself made the request.
-	UserID string
-	// PubKey is the subject's nkey public key (the JWT sub claim) that must
-	// sign requests.
-	PubKey string
-	// Scopes granted to the subject.
-	Scopes []string
-	// Bearer marks a user token whose holder authenticates by the token
-	// alone, without per-request signatures.
-	Bearer bool
-	// ID is the token's unique identifier (jti), the allowlist key.
+	// ID is the token's unique identifier (jti), the allowlist key for
+	// account tokens.
 	ID string
-	// Issuer is the issuer public key that signed the token.
+	// Issuer is the issuer public key that signed the token (iss).
 	Issuer string
-	// ExpiresAt is the token expiry; zero means the token never expires.
+	// Subject is the subject's nkey public key (sub) that must sign
+	// requests.
+	Subject string
+	// IssuedAt is the token mint time (iat).
+	IssuedAt time.Time
+	// ExpiresAt is the token expiry (exp); zero means the token never
+	// expires.
 	ExpiresAt time.Time
-	// NotBefore is the token activation time; zero means immediately valid.
+	// NotBefore is the token activation time (nbf); zero means immediately
+	// valid.
 	NotBefore time.Time
-	// AccountExt and UserExt carry the named extension claims of the account
-	// and user tokens (WithExtension), verbatim. Decode them with Ext or
-	// validate them with ExtValidator.
-	AccountExt Extensions
-	UserExt    Extensions
+}
+
+// AccountClaims is the verified content of an account (tenant) token.
+type AccountClaims struct {
+	Claims
+	// Name is the tenant's human-readable label; it segments all stored
+	// data. Falls back to the subject key when the token carries no name.
+	Name string
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions
+}
+
+// UserClaims is the verified content of a user token.
+type UserClaims struct {
+	Claims
+	// Name is the user's human-readable label. Falls back to the subject
+	// key when the token carries no name.
+	Name string
+	// Bearer marks a token whose holder authenticates by the token alone,
+	// without per-request signatures.
+	Bearer bool
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions
+}
+
+// Extension is a named claim payload carried in a token's ext field.
+// Implementations are value struct types whose zero value reports the name.
+type Extension interface {
+	ExtensionName() string
 }
 
 // issueConfig collects IssueOption effects.
@@ -100,12 +123,14 @@ func WithBearer() IssueOption {
 	return func(c *issueConfig) { c.bearer = true }
 }
 
-// WithExtension embeds a named extension claim into the token's ext field.
-// Repeat the option for multiple extensions; a duplicate name is an error.
-// The scheme signs and transports the value untouched; servers read it back
-// via Claims.AccountExt/UserExt, the Ext helper, or an ExtValidator.
-func WithExtension(name string, v any) IssueOption {
+// WithExtension embeds a named extension claim into the token's ext field;
+// the name comes from the value's ExtensionName. Repeat the option for
+// multiple extensions; a duplicate name is an error. The scheme signs and
+// transports the value untouched; servers read it back with ExtOf or
+// validate it with an ExtValidator.
+func WithExtension(v Extension) IssueOption {
 	return func(c *issueConfig) {
+		name := v.ExtensionName()
 		if name == "" {
 			c.err = errors.New("valiss: extension name must not be empty")
 			return
@@ -130,7 +155,7 @@ func WithExtension(name string, v any) IssueOption {
 // token subject is the tenant's account public key and name carries the
 // tenant id; the tenant signs requests with the seed matching the subject
 // key.
-func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, opts ...IssueOption) (string, error) {
+func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
 		return "", errors.New("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
@@ -148,19 +173,19 @@ func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []strin
 		return "", errors.New("valiss: bearer applies only to user tokens")
 	}
 	return encodeToken(operator, &wire[accountBody]{
-		Name:      tenantID,
+		Name:      name,
 		Subject:   tenantPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    accountBody{Type: accountType, Scopes: scopes, Ext: cfg.ext},
+		Valiss:    accountBody{Type: accountType, Ext: cfg.ext},
 	})
 }
 
 // IssueUser mints a user token signed by a tenant's account key, delegating
-// a subset of the tenant's access to an end user. As in NATS, the token
-// subject is the user's public key and name carries the user id. WithBearer
-// produces a token the server accepts without per-request signatures.
-func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string, opts ...IssueOption) (string, error) {
+// to an end user. As in NATS, the token subject is the user's public key and
+// name carries the user id. WithBearer produces a token the server accepts
+// without per-request signatures.
+func IssueUser(account nkeys.KeyPair, name, userPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := account.PublicKey(); err != nil || !nkeys.IsValidPublicAccountKey(pub) {
 		return "", errors.New("valiss: user tokens must be signed by an account-type nkey (expected an SA... seed)")
 	}
@@ -175,18 +200,18 @@ func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string
 		return "", cfg.err
 	}
 	return encodeToken(account, &wire[userBody]{
-		Name:      userID,
+		Name:      name,
 		Subject:   userPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    userBody{Type: userType, Scopes: scopes, Bearer: cfg.bearer, Ext: cfg.ext},
+		Valiss:    userBody{Type: userType, Bearer: cfg.bearer, Ext: cfg.ext},
 	})
 }
 
 // VerifyAccount decodes an account token, checks its type, signature, and
 // issuer, and returns the claims. It does NOT check expiry, activation, or
 // the allowlist; the Verifier layers those so callers get precise errors.
-func VerifyAccount(token, operatorPubKey string) (*Claims, error) {
+func VerifyAccount(token, operatorPubKey string) (*AccountClaims, error) {
 	c, err := decodeToken[accountBody](token)
 	if err != nil {
 		return nil, err
@@ -200,15 +225,17 @@ func VerifyAccount(token, operatorPubKey string) (*Claims, error) {
 	if !nkeys.IsValidPublicAccountKey(c.Subject) {
 		return nil, errors.New("valiss: account token subject is not an account public key")
 	}
-	claims := claimsOf(c, c.Valiss.Scopes, false)
-	claims.AccountExt = c.Valiss.Ext
-	return claims, nil
+	return &AccountClaims{
+		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
+		Name:   nameOf(c.Name, c.Subject),
+		Ext:    c.Valiss.Ext,
+	}, nil
 }
 
 // VerifyUser decodes a user token, checks its type, signature, and issuer
 // (the account public key that delegated it), and returns the claims.
 // Expiry and activation checks belong to the Verifier.
-func VerifyUser(token, accountPubKey string) (*Claims, error) {
+func VerifyUser(token, accountPubKey string) (*UserClaims, error) {
 	c, err := decodeToken[userBody](token)
 	if err != nil {
 		return nil, err
@@ -222,63 +249,47 @@ func VerifyUser(token, accountPubKey string) (*Claims, error) {
 	if !nkeys.IsValidPublicUserKey(c.Subject) {
 		return nil, errors.New("valiss: user token subject is not a user public key")
 	}
-	claims := claimsOf(c, c.Valiss.Scopes, c.Valiss.Bearer)
-	claims.UserExt = c.Valiss.Ext
-	return claims, nil
+	return &UserClaims{
+		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
+		Name:   nameOf(c.Name, c.Subject),
+		Bearer: c.Valiss.Bearer,
+		Ext:    c.Valiss.Ext,
+	}, nil
 }
 
 // Decode parses a token of either level without establishing trust: the
 // signature is checked against the token's own embedded issuer only. For
 // inspection and tooling; servers must use VerifyAccount or VerifyUser.
 func Decode(token string) (*Claims, error) {
-	c, err := decodeToken[anyBody](token)
+	c, err := decodeToken[struct{}](token)
 	if err != nil {
 		return nil, err
 	}
-	claims := claimsOf(c, c.Valiss.Scopes, c.Valiss.Bearer)
-	switch c.Valiss.Type {
-	case accountType:
-		claims.AccountExt = c.Valiss.Ext
-	case userType:
-		claims.UserExt = c.Valiss.Ext
-	}
-	return claims, nil
+	claims := claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore)
+	return &claims, nil
 }
 
-// Ext decodes a named extension claim into T. An absent name yields the
-// zero value.
-func Ext[T any](exts Extensions, name string) (T, error) {
-	var v T
-	raw, ok := exts[name]
-	if !ok {
-		return v, nil
+// claimsOf builds the RFC claims set from wire fields.
+func claimsOf(id, issuer, subject string, issuedAt, expires, notBefore int64) Claims {
+	c := Claims{ID: id, Issuer: issuer, Subject: subject}
+	if issuedAt != 0 {
+		c.IssuedAt = time.Unix(issuedAt, 0)
 	}
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return v, fmt.Errorf("valiss: decode extension %q: %w", name, err)
+	if expires != 0 {
+		c.ExpiresAt = time.Unix(expires, 0)
 	}
-	return v, nil
+	if notBefore != 0 {
+		c.NotBefore = time.Unix(notBefore, 0)
+	}
+	return c
 }
 
-func claimsOf[B any](c *wire[B], scopes []string, bearer bool) *Claims {
-	name := c.Name
-	if name == "" {
-		name = c.Subject
+// nameOf falls back to the subject key when a token carries no name.
+func nameOf(name, subject string) string {
+	if name != "" {
+		return name
 	}
-	claims := &Claims{
-		TenantID: name,
-		PubKey:   c.Subject,
-		Scopes:   scopes,
-		Bearer:   bearer,
-		ID:       c.ID,
-		Issuer:   c.Issuer,
-	}
-	if c.Expires != 0 {
-		claims.ExpiresAt = time.Unix(c.Expires, 0)
-	}
-	if c.NotBefore != 0 {
-		claims.NotBefore = time.Unix(c.NotBefore, 0)
-	}
-	return claims
+	return subject
 }
 
 // Expired reports whether the token has passed its expiry (with skew slack).
@@ -292,18 +303,6 @@ func (c *Claims) NotYetValid(now time.Time, skew time.Duration) bool {
 	return !c.NotBefore.IsZero() && now.Add(skew).Before(c.NotBefore)
 }
 
-// HasScope reports whether the subject holds an exact scope grant.
-func (c *Claims) HasScope(scope string) bool {
-	return slices.Contains(c.Scopes, scope)
-}
-
-// Authorizes reports whether any granted scope covers the required scope. A
-// grant ending in "*" is a prefix wildcard, so "call:/svc/*" covers every
-// method of that service and "call:*" covers every call.
-func (c *Claims) Authorizes(required string) bool {
-	return Covered(c.Scopes, required)
-}
-
 // IssuerOf returns the public key that signed a token, after checking the
 // token's own signature against it. It does not establish trust: the caller
 // must still verify the issuer's place in the chain.
@@ -315,8 +314,23 @@ func IssuerOf(token string) (string, error) {
 	return c.Issuer, nil
 }
 
-// Covered reports whether any granted scope covers the required scope,
-// honoring trailing-"*" prefix wildcards.
+// ExtOf decodes the extension claim named by T's zero value. An absent name
+// yields the zero value and false.
+func ExtOf[T Extension](exts Extensions) (T, bool, error) {
+	var v T
+	raw, ok := exts[v.ExtensionName()]
+	if !ok {
+		return v, false, nil
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return v, false, fmt.Errorf("valiss: decode extension %q: %w", v.ExtensionName(), err)
+	}
+	return v, true, nil
+}
+
+// Covered reports whether any granted pattern covers the required value,
+// honoring trailing-"*" prefix wildcards. Transport extensions use it for
+// paths and methods.
 func Covered(granted []string, required string) bool {
 	for _, g := range granted {
 		if scopeMatch(g, required) {

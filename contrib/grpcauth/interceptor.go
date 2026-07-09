@@ -1,8 +1,8 @@
 // Package grpcauth wires the tenant authentication scheme into gRPC: server
 // interceptors that verify the per-request credential and enforce the gRPC
 // extension claim (Ext), and a client per-RPC credential that attaches the
-// credential. Handlers read the authenticated tenant with
-// valiss.TenantFromContext.
+// credential. Handlers read the verified identity with
+// valiss.IdentityFromContext.
 package grpcauth
 
 import (
@@ -42,14 +42,14 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 	if req.AccountToken == "" && req.UserToken == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")
 	}
-	claims, err := a.verifier.VerifyRequest(req)
+	id, err := a.verifier.VerifyRequest(req)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
-	if err := authorizeExt(claims, fullMethod); err != nil {
+	if err := authorizeExt(id, fullMethod); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
-	return valiss.ContextWithTenant(ctx, claims), nil
+	return valiss.ContextWithIdentity(ctx, id), nil
 }
 
 // UnaryInterceptor authenticates and authorizes unary RPCs.

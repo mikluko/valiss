@@ -42,13 +42,15 @@ in a secrets manager as `VALISS_SEED_<PUBLIC-KEY>` environment variables.
    accounts:
      - name: acme
        key: A...
-       scopes: ["widgets"]          # consumer-defined strings
        expires: 2026-12-31T00:00:00Z # optional; absent = never expires
        users:
          - name: alice              # no key: fresh pair minted every run
          - name: carol
            bearer: true             # token-only creds, no seed handed out
    ```
+
+   The minter mints plain identity tokens; authorization rides typed
+   extension claims, a programmatic-issuance feature (`valiss.WithExtension`).
 
 3. Mint credentials. The creds file goes to stdout; metadata — including
    the account token `jti` your server-side allowlist must accept — goes to

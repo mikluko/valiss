@@ -220,7 +220,7 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct Account) error
 		return err
 	}
 	tok, meta, err := mintToken(func() (string, error) {
-		return valiss.Issue(operator, acct.Name, pub, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
+		return valiss.Issue(operator, acct.Name, pub, validity(acct.Expires, acct.NotBefore)...)
 	}, acct.Name, pub, generated)
 	if err != nil {
 		return err
@@ -262,7 +262,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName
 	)
 	if operator != nil {
 		tok, meta, err := mintToken(func() (string, error) {
-			return valiss.Issue(operator, acct.Name, acct.Key, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
+			return valiss.Issue(operator, acct.Name, acct.Key, validity(acct.Expires, acct.NotBefore)...)
 		}, acct.Name, acct.Key, false)
 		if err != nil {
 			return err
@@ -289,7 +289,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName
 		}
 	}
 	userTok, userMeta, err := mintToken(func() (string, error) {
-		return valiss.IssueUser(account, user.Name, userPub, user.Scopes, opts...)
+		return valiss.IssueUser(account, user.Name, userPub, opts...)
 	}, user.Name, userPub, generated)
 	if err != nil {
 		return err
@@ -372,9 +372,9 @@ func fatal(err error) {
 }
 
 // The minter.yaml token manifest: the public, non-secret description of the
-// credential tree (operator public key, accounts with their public keys and
-// scopes, users under each account). Seeds never appear here; the creds
-// command resolves them from VALISS_SEED_<PUBKEY> environment variables.
+// credential tree (operator public key, accounts with their public keys,
+// users under each account). Seeds never appear here; the creds command
+// resolves them from VALISS_SEED_<PUBKEY> environment variables.
 //
 // The manifest is deterministic: validity boundaries are absolute RFC3339
 // timestamps (expires, not_before), so re-minting against the same manifest
@@ -396,9 +396,6 @@ type User struct {
 	// per-request signatures and the creds carry no seed. A user without a
 	// key gets a throwaway pair at mint time.
 	Bearer bool `yaml:"bearer,omitempty"`
-	// Scopes granted to the user; each must be covered by the account's
-	// scopes.
-	Scopes []string `yaml:"scopes,omitempty"`
 	// Expires is the token expiry (the JWT exp claim), absolute RFC3339.
 	// Absent means the token never expires.
 	Expires time.Time `yaml:"expires,omitempty"`
@@ -417,8 +414,6 @@ type Account struct {
 	// mint time (such an account cannot have users minted against the
 	// manifest, as the signing seed has no stable name).
 	Key string `yaml:"key,omitempty"`
-	// Scopes granted to the account, e.g. "call:/pkg.Svc/*".
-	Scopes []string `yaml:"scopes,omitempty"`
 	// Expires is the token expiry (the JWT exp claim), absolute RFC3339.
 	// Absent means the token never expires.
 	Expires time.Time `yaml:"expires,omitempty"`
@@ -513,11 +508,6 @@ func validateAccount(a Account) error {
 		}
 		if err := validateWindow(u.Expires, u.NotBefore); err != nil {
 			return fmt.Errorf("user %q: %w", u.Name, err)
-		}
-		for _, s := range u.Scopes {
-			if !valiss.Covered(a.Scopes, s) {
-				return fmt.Errorf("user %q: scope %q is not covered by the account scopes", u.Name, s)
-			}
 		}
 	}
 	return nil

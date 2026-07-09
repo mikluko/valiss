@@ -28,20 +28,29 @@ func tenantKeys(t *testing.T) (nkeys.KeyPair, string) {
 	return tp, pub
 }
 
+func userKeys(t *testing.T) (nkeys.KeyPair, string) {
+	t.Helper()
+	up, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	pub, err := up.PublicKey()
+	require.NoError(t, err)
+	return up, pub
+}
+
 func TestIssueVerify(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub := tenantKeys(t)
 
-	token, err := Issue(op, "acme", tenantPub, []string{"read", "write"}, WithTTL(time.Hour))
+	token, err := Issue(op, "acme", tenantPub, WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	claims, err := VerifyAccount(token, opPub)
 	require.NoError(t, err)
-	assert.Equal(t, "acme", claims.TenantID)
-	assert.Equal(t, tenantPub, claims.PubKey)
-	assert.True(t, claims.HasScope("read"))
-	assert.False(t, claims.HasScope("admin"))
+	assert.Equal(t, "acme", claims.Name)
+	assert.Equal(t, tenantPub, claims.Subject)
+	assert.Equal(t, opPub, claims.Issuer)
 	assert.NotEmpty(t, claims.ID)
+	assert.False(t, claims.IssuedAt.IsZero())
 	assert.False(t, claims.Expired(time.Now(), 0))
 
 	t.Run("wrong issuer rejected", func(t *testing.T) {
@@ -57,12 +66,12 @@ func TestIssueVerify(t *testing.T) {
 
 	t.Run("non-operator-type signer rejected", func(t *testing.T) {
 		account, _ := tenantKeys(t)
-		_, err := Issue(account, "acme", tenantPub, nil, WithTTL(time.Hour))
+		_, err := Issue(account, "acme", tenantPub, WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "operator-type nkey")
 	})
 
 	t.Run("expired", func(t *testing.T) {
-		short, err := Issue(op, "acme", tenantPub, nil, WithTTL(time.Second))
+		short, err := Issue(op, "acme", tenantPub, WithTTL(time.Second))
 		require.NoError(t, err)
 		c, err := VerifyAccount(short, opPub)
 		require.NoError(t, err)
@@ -75,46 +84,44 @@ func TestIssueVerify(t *testing.T) {
 	})
 
 	t.Run("bearer option rejected", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, nil, WithBearer())
+		_, err := Issue(op, "acme", tenantPub, WithBearer())
 		assert.ErrorContains(t, err, "bearer applies only to user tokens")
 	})
-}
 
-func userKeys(t *testing.T) (nkeys.KeyPair, string) {
-	t.Helper()
-	up, err := nkeys.CreateUser()
-	require.NoError(t, err)
-	pub, err := up.PublicKey()
-	require.NoError(t, err)
-	return up, pub
+	t.Run("name falls back to the subject key", func(t *testing.T) {
+		unnamed, err := Issue(op, "", tenantPub)
+		require.NoError(t, err)
+		c, err := VerifyAccount(unnamed, opPub)
+		require.NoError(t, err)
+		assert.Equal(t, tenantPub, c.Name)
+	})
 }
 
 func TestIssueUser(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	_, userPub := userKeys(t)
 
-	tok, err := IssueUser(account, "alice", userPub, []string{"read"}, WithTTL(time.Hour))
+	tok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := VerifyUser(tok, accountPub)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", claims.TenantID)
-	assert.Equal(t, userPub, claims.PubKey)
-	assert.True(t, claims.HasScope("read"))
+	assert.Equal(t, "alice", claims.Name)
+	assert.Equal(t, userPub, claims.Subject)
 	assert.False(t, claims.Bearer)
 
 	t.Run("non-account-type signer rejected", func(t *testing.T) {
 		op, _ := issuerKeys(t)
-		_, err := IssueUser(op, "alice", userPub, nil, WithTTL(time.Hour))
+		_, err := IssueUser(op, "alice", userPub, WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "account-type nkey")
 	})
 
 	t.Run("keyless rejected", func(t *testing.T) {
-		_, err := IssueUser(account, "carol", "", []string{"read"}, WithTTL(time.Hour))
+		_, err := IssueUser(account, "carol", "", WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "invalid user public key")
 	})
 
 	t.Run("bearer flag round-trips", func(t *testing.T) {
-		tok, err := IssueUser(account, "carol", userPub, []string{"read"}, WithBearer(), WithTTL(time.Hour))
+		tok, err := IssueUser(account, "carol", userPub, WithBearer(), WithTTL(time.Hour))
 		require.NoError(t, err)
 		claims, err := VerifyUser(tok, accountPub)
 		require.NoError(t, err)
@@ -128,58 +135,78 @@ func TestIssueUser(t *testing.T) {
 
 	t.Run("account key rejected as user key", func(t *testing.T) {
 		_, otherAcctPub := tenantKeys(t)
-		_, err := IssueUser(account, "alice", otherAcctPub, nil, WithTTL(time.Hour))
+		_, err := IssueUser(account, "alice", otherAcctPub, WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "invalid user public key")
 	})
 }
+
+// domainClaims is a consumer-defined extension used across the tests.
+type domainClaims struct {
+	Plan  string `json:"plan"`
+	Quota int    `json:"quota"`
+}
+
+func (domainClaims) ExtensionName() string { return "acme.example" }
+
+// otherExt exercises multiple extensions on one token.
+type otherExt struct {
+	K string `json:"k"`
+}
+
+func (otherExt) ExtensionName() string { return "other" }
+
+// unnamedExt has an empty name and must be rejected at issue.
+type unnamedExt struct{}
+
+func (unnamedExt) ExtensionName() string { return "" }
+
+// clashingExt shares domainClaims' name to trigger the duplicate error.
+type clashingExt struct{}
+
+func (clashingExt) ExtensionName() string { return "acme.example" }
 
 func TestExtension(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub := tenantKeys(t)
 
-	type domainClaims struct {
-		Plan  string `json:"plan"`
-		Quota int    `json:"quota"`
-	}
-
-	tok, err := Issue(op, "acme", tenantPub, nil,
-		WithExtension("acme.example", domainClaims{Plan: "pro", Quota: 42}),
-		WithExtension("other", map[string]string{"k": "v"}),
+	tok, err := Issue(op, "acme", tenantPub,
+		WithExtension(domainClaims{Plan: "pro", Quota: 42}),
+		WithExtension(otherExt{K: "v"}),
 	)
 	require.NoError(t, err)
 	claims, err := VerifyAccount(tok, opPub)
 	require.NoError(t, err)
-	got, err := Ext[domainClaims](claims.AccountExt, "acme.example")
+
+	got, ok, err := ExtOf[domainClaims](claims.Ext)
 	require.NoError(t, err)
+	assert.True(t, ok)
 	assert.Equal(t, domainClaims{Plan: "pro", Quota: 42}, got)
-	other, err := Ext[map[string]string](claims.AccountExt, "other")
+
+	other, ok, err := ExtOf[otherExt](claims.Ext)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"k": "v"}, other)
+	assert.True(t, ok)
+	assert.Equal(t, otherExt{K: "v"}, other)
 
 	t.Run("absent extension decodes to zero value", func(t *testing.T) {
-		plain, err := Issue(op, "acme", tenantPub, nil)
+		plain, err := Issue(op, "acme", tenantPub)
 		require.NoError(t, err)
 		claims, err := VerifyAccount(plain, opPub)
 		require.NoError(t, err)
-		got, err := Ext[domainClaims](claims.AccountExt, "acme.example")
+		got, ok, err := ExtOf[domainClaims](claims.Ext)
 		require.NoError(t, err)
+		assert.False(t, ok)
 		assert.Zero(t, got)
 	})
 
 	t.Run("duplicate extension name rejected", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, nil,
-			WithExtension("dup", 1), WithExtension("dup", 2))
-		assert.ErrorContains(t, err, `duplicate extension "dup"`)
+		_, err := Issue(op, "acme", tenantPub,
+			WithExtension(domainClaims{}), WithExtension(clashingExt{}))
+		assert.ErrorContains(t, err, `duplicate extension "acme.example"`)
 	})
 
 	t.Run("empty extension name rejected", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, nil, WithExtension("", 1))
+		_, err := Issue(op, "acme", tenantPub, WithExtension(unnamedExt{}))
 		assert.ErrorContains(t, err, "name must not be empty")
-	})
-
-	t.Run("unmarshalable extension rejected at issue", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, nil, WithExtension("bad", func() {}))
-		assert.ErrorContains(t, err, "encode extension")
 	})
 }
 
@@ -188,21 +215,23 @@ func TestDecode(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	_, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
+	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, nil, WithBearer())
+	userTok, err := IssueUser(account, "alice", userPub, WithBearer())
 	require.NoError(t, err)
 
 	acct, err := Decode(acctTok)
 	require.NoError(t, err)
-	assert.Equal(t, "acme", acct.TenantID)
 	assert.Equal(t, opPub, acct.Issuer)
+	assert.Equal(t, accountPub, acct.Subject)
+	assert.NotEmpty(t, acct.ID)
 	assert.False(t, acct.ExpiresAt.IsZero())
 
 	user, err := Decode(userTok)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", user.TenantID)
-	assert.True(t, user.Bearer)
+	assert.Equal(t, accountPub, user.Issuer)
+	assert.Equal(t, userPub, user.Subject)
+	assert.True(t, user.ExpiresAt.IsZero(), "no expiry set")
 }
 
 func TestSignVerifyRequest(t *testing.T) {
@@ -252,16 +281,14 @@ func TestLoadAllowlistFile(t *testing.T) {
 	assert.False(t, a.Allowed("# tenants"))
 }
 
-func TestAuthorizesWildcard(t *testing.T) {
-	svcAll := &Claims{Scopes: []string{"call:/example.v1.WidgetService/*"}}
-	assert.True(t, svcAll.Authorizes("call:/example.v1.WidgetService/GetWidget"))
-	assert.False(t, svcAll.Authorizes("call:/example.v1.GadgetService/GetGadget"))
+func TestCovered(t *testing.T) {
+	svcAll := []string{"/example.v1.WidgetService/*"}
+	assert.True(t, Covered(svcAll, "/example.v1.WidgetService/GetWidget"))
+	assert.False(t, Covered(svcAll, "/example.v1.GadgetService/GetGadget"))
 
-	all := &Claims{Scopes: []string{"call:*"}}
-	assert.True(t, all.Authorizes("call:/anything/Method"))
+	assert.True(t, Covered([]string{"*"}, "/anything/Method"))
 
-	exact := &Claims{Scopes: []string{"call:/svc/Method"}}
-	assert.True(t, exact.Authorizes("call:/svc/Method"))
-	assert.False(t, exact.Authorizes("call:/svc/Other"))
-	assert.False(t, exact.HasScope("call:/svc/Other"))
+	exact := []string{"/svc/Method"}
+	assert.True(t, Covered(exact, "/svc/Method"))
+	assert.False(t, Covered(exact, "/svc/Other"))
 }

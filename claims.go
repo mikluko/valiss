@@ -34,8 +34,6 @@ type Extensions map[string]json.RawMessage
 type accountBody struct {
 	// Type discriminates the claim body; always "account".
 	Type string `json:"type"`
-	// Scopes granted to the tenant; the ceiling for its users' scopes.
-	Scopes []string `json:"scopes,omitempty"`
 	// Ext carries the named extension claims (WithExtension).
 	Ext Extensions `json:"ext,omitempty"`
 }
@@ -44,23 +42,11 @@ type accountBody struct {
 type userBody struct {
 	// Type discriminates the claim body; always "user".
 	Type string `json:"type"`
-	// Scopes granted to the user; clamped to the account's scopes at
-	// verification.
-	Scopes []string `json:"scopes,omitempty"`
 	// Bearer marks a token the server accepts without per-request
 	// signatures.
 	Bearer bool `json:"bearer,omitempty"`
 	// Ext carries the named extension claims (WithExtension).
 	Ext Extensions `json:"ext,omitempty"`
-}
-
-// anyBody is the superset body used when the token level is not known up
-// front (Decode).
-type anyBody struct {
-	Type   string     `json:"type"`
-	Scopes []string   `json:"scopes,omitempty"`
-	Bearer bool       `json:"bearer,omitempty"`
-	Ext    Extensions `json:"ext,omitempty"`
 }
 
 // wire is the JWT claims document. Standard fields use their RFC 7519 names

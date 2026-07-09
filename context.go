@@ -2,17 +2,17 @@ package valiss
 
 import "context"
 
-type tenantKey struct{}
+type identityKey struct{}
 
-// ContextWithTenant returns a context carrying authenticated tenant claims.
+// ContextWithIdentity returns a context carrying the verified identity.
 // Transport middlewares call this after verification.
-func ContextWithTenant(ctx context.Context, c *Claims) context.Context {
-	return context.WithValue(ctx, tenantKey{}, c)
+func ContextWithIdentity(ctx context.Context, id *Identity) context.Context {
+	return context.WithValue(ctx, identityKey{}, id)
 }
 
-// TenantFromContext returns the authenticated tenant claims a handler uses to
+// IdentityFromContext returns the verified identity a handler uses to
 // segment data. The bool is false on unauthenticated contexts.
-func TenantFromContext(ctx context.Context) (*Claims, bool) {
-	c, ok := ctx.Value(tenantKey{}).(*Claims)
-	return c, ok
+func IdentityFromContext(ctx context.Context) (*Identity, bool) {
+	id, ok := ctx.Value(identityKey{}).(*Identity)
+	return id, ok
 }

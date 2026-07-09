@@ -14,7 +14,7 @@ import (
 // Transport is an http.RoundTripper that attaches the creds' tokens and,
 // when the creds hold a seed, a fresh per-request signature. Creds without
 // a seed are bearer credentials: the server accepts them only when the
-// effective token grants valiss.ScopeBearer. Set it as (or wrap it around)
+// effective token is a bearer user token. Set it as (or wrap it around)
 // http.Client.Transport.
 type Transport struct {
 	base         http.RoundTripper

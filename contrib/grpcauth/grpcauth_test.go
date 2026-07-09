@@ -37,13 +37,24 @@ func tenantKeys(t *testing.T) (nkeys.KeyPair, string, []byte) {
 	return tp, pub, seed
 }
 
+func userKeys(t *testing.T) (nkeys.KeyPair, string, []byte) {
+	t.Helper()
+	up, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	pub, err := up.PublicKey()
+	require.NoError(t, err)
+	seed, err := up.Seed()
+	require.NoError(t, err)
+	return up, pub, seed
+}
+
 // authContext builds an incoming-metadata context as the interceptor sees it.
-func authContext(cred valiss.Request) context.Context {
+func authContext(req valiss.Request) context.Context {
 	md := metadata.New(map[string]string{
-		valiss.HeaderAccountToken: cred.AccountToken,
-		valiss.HeaderUserToken:    cred.UserToken,
-		valiss.HeaderTimestamp:    cred.Timestamp,
-		valiss.HeaderSignature:    cred.Signature,
+		valiss.HeaderAccountToken: req.AccountToken,
+		valiss.HeaderUserToken:    req.UserToken,
+		valiss.HeaderTimestamp:    req.Timestamp,
+		valiss.HeaderSignature:    req.Signature,
 	})
 	return metadata.NewIncomingContext(context.Background(), md)
 }
@@ -55,8 +66,8 @@ func unaryInfo(method string) *grpc.UnaryServerInfo {
 func TestExtEnforcement(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, _ := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, nil,
-		WithExt(Ext{Methods: []string{"/example.v1.WidgetService/*"}}),
+	tok, err := valiss.Issue(op, "acme", tenantPub,
+		valiss.WithExtension(Ext{Methods: []string{"/example.v1.WidgetService/*"}}),
 		valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
@@ -81,7 +92,7 @@ func TestExtEnforcement(t *testing.T) {
 	})
 
 	t.Run("token without extension is unconstrained", func(t *testing.T) {
-		open, err := valiss.Issue(op, "acme", tenantPub, nil, valiss.WithTTL(time.Hour))
+		open, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: open, Timestamp: ts, Signature: sig}), nil,
 			unaryInfo("/anything/Method"), handler)
@@ -92,7 +103,7 @@ func TestExtEnforcement(t *testing.T) {
 func TestAuthenticate(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, _ := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, []string{"read"}, valiss.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := valiss.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
@@ -104,19 +115,19 @@ func TestAuthenticate(t *testing.T) {
 	ts, sig, err := valiss.SignRequest(tenant, now)
 	require.NoError(t, err)
 
-	t.Run("authenticated request injects tenant", func(t *testing.T) {
-		var got *valiss.Claims
+	t.Run("authenticated request injects the identity", func(t *testing.T) {
+		var got *valiss.Identity
 		_, err := auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
 			func(ctx context.Context, _ any) (any, error) {
-				c, ok := valiss.TenantFromContext(ctx)
+				id, ok := valiss.IdentityFromContext(ctx)
 				assert.True(t, ok)
-				got = c
+				got = id
 				return nil, nil
 			})
 		require.NoError(t, err)
 		require.NotNil(t, got)
-		assert.Equal(t, "acme", got.TenantID)
-		assert.True(t, got.HasScope("read"))
+		assert.Equal(t, "acme", got.Account.Name)
+		assert.Nil(t, got.User)
 	})
 
 	call := func(ctx context.Context) error {
@@ -149,7 +160,7 @@ func TestAuthenticate(t *testing.T) {
 func TestCredentials(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, nil, valiss.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	c, err := NewCredentials(creds.Creds{AccountToken: tok, Seed: seed})
@@ -161,7 +172,7 @@ func TestCredentials(t *testing.T) {
 	ctx := authContext(valiss.Request{AccountToken: md[valiss.HeaderAccountToken], Timestamp: md[valiss.HeaderTimestamp], Signature: md[valiss.HeaderSignature]})
 	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 		func(ctx context.Context, _ any) (any, error) {
-			_, ok := valiss.TenantFromContext(ctx)
+			_, ok := valiss.IdentityFromContext(ctx)
 			assert.True(t, ok)
 			return nil, nil
 		})
@@ -173,18 +184,15 @@ func TestCredentials(t *testing.T) {
 func TestBearerCredentials(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub, _ := tenantKeys(t)
-	user, err := nkeys.CreateUser()
-	require.NoError(t, err)
-	userPub, err := user.PublicKey()
-	require.NoError(t, err)
+	_, userPub, _ := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, "acme", accountPub, []string{"call:*"}, valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	handler := func(context.Context, any) (any, error) { return nil, nil }
 
 	t.Run("bearer user token allows token-only call", func(t *testing.T) {
-		bearerTok, err := valiss.IssueUser(account, "carol", userPub, []string{"call:*"}, valiss.WithBearer(), valiss.WithTTL(time.Hour))
+		bearerTok, err := valiss.IssueUser(account, "carol", userPub, valiss.WithBearer(), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: bearerTok})
 		require.NoError(t, err)
@@ -206,7 +214,7 @@ func TestBearerCredentials(t *testing.T) {
 func TestCredsEndToEnd(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, "acme", tenantPub, []string{"call:*"}, valiss.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	parsed, err := creds.Parse(creds.Format(creds.Creds{AccountToken: tok, Seed: seed}))
@@ -218,7 +226,7 @@ func TestCredsEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	claims, err := valiss.VerifyAccount(md[valiss.HeaderAccountToken], opPub)
 	require.NoError(t, err)
-	assert.NoError(t, valiss.VerifySignature(claims.PubKey, md[valiss.HeaderTimestamp], md[valiss.HeaderSignature], time.Now(), valiss.DefaultSkew))
+	assert.NoError(t, valiss.VerifySignature(claims.Subject, md[valiss.HeaderTimestamp], md[valiss.HeaderSignature], time.Now(), valiss.DefaultSkew))
 }
 
 // TestUserChain proves user-level creds authenticate through the
@@ -226,18 +234,13 @@ func TestCredsEndToEnd(t *testing.T) {
 func TestUserChain(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub, _ := tenantKeys(t)
-	user, err := nkeys.CreateUser()
-	require.NoError(t, err)
-	userPub, err := user.PublicKey()
-	require.NoError(t, err)
-	userSeed, err := user.Seed()
-	require.NoError(t, err)
+	_, userPub, userSeed := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, "acme", accountPub, nil,
-		WithExt(Ext{Methods: []string{"/svc/*"}}), valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub,
+		valiss.WithExtension(Ext{Methods: []string{"/svc/*"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := valiss.IssueUser(account, "alice", userPub, nil,
-		WithExt(Ext{Methods: []string{"/svc/M"}}), valiss.WithTTL(time.Hour))
+	userTok, err := valiss.IssueUser(account, "alice", userPub,
+		valiss.WithExtension(Ext{Methods: []string{"/svc/M"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed})
@@ -254,10 +257,11 @@ func TestUserChain(t *testing.T) {
 	})
 	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 		func(ctx context.Context, _ any) (any, error) {
-			claims, ok := valiss.TenantFromContext(ctx)
+			id, ok := valiss.IdentityFromContext(ctx)
 			require.True(t, ok)
-			assert.Equal(t, "acme", claims.TenantID)
-			assert.Equal(t, "alice", claims.UserID)
+			assert.Equal(t, "acme", id.Account.Name)
+			require.NotNil(t, id.User)
+			assert.Equal(t, "alice", id.User.Name)
 			return nil, nil
 		})
 	assert.NoError(t, err)
@@ -271,8 +275,8 @@ func TestUserChain(t *testing.T) {
 	// Both levels bind: a user extension wider than the account's does not
 	// escape the account bounds.
 	t.Run("account extension clamps the user", func(t *testing.T) {
-		wide, err := valiss.IssueUser(account, "mallory", userPub, nil,
-			WithExt(Ext{Methods: []string{"/other/*"}}), valiss.WithTTL(time.Hour))
+		wide, err := valiss.IssueUser(account, "mallory", userPub,
+			valiss.WithExtension(Ext{Methods: []string{"/other/*"}}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		wc, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: wide, Seed: userSeed})
 		require.NoError(t, err)
