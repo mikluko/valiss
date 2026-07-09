@@ -84,7 +84,7 @@ func TestAuthenticate(t *testing.T) {
 	tenant, tenantPub, _ := tenantKeys(t)
 	tok, err := token.Issue(op, "acme", tenantPub, []string{"read"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
-	claims, err := token.Verify(tok, opPub)
+	claims, err := token.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
 
 	now := time.Now()
@@ -162,28 +162,33 @@ func TestCredentials(t *testing.T) {
 
 func TestBearerCredentials(t *testing.T) {
 	op, opPub := issuerKeys(t)
-	_, tenantPub, _ := tenantKeys(t)
+	account, accountPub, _ := tenantKeys(t)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userPub, err := user.PublicKey()
+	require.NoError(t, err)
+
+	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, token.WithTTL(time.Hour))
+	require.NoError(t, err)
 	auth := NewAuthenticator(token.NewVerifier(opPub, token.AllowAll{}))
 	handler := func(context.Context, any) (any, error) { return nil, nil }
 
-	t.Run("bearer scope allows token-only call", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, token.WithTTL(time.Hour))
+	t.Run("bearer user token allows token-only call", func(t *testing.T) {
+		bearerTok, err := token.IssueUser(account, "carol", userPub, []string{"call:*"}, token.WithBearer(), token.WithTTL(time.Hour))
 		require.NoError(t, err)
-		c, err := NewCredentials(creds.Creds{AccountToken: tok})
+		c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: bearerTok})
 		require.NoError(t, err)
 		md, err := c.GetRequestMetadata(context.Background())
 		require.NoError(t, err)
 		assert.NotContains(t, md, token.HeaderSignature)
-		_, err = auth.UnaryInterceptor()(authContext(token.Request{AccountToken: md[token.HeaderAccountToken]}), nil, unaryInfo("/svc/M"), handler)
+		_, err = auth.UnaryInterceptor()(authContext(token.Request{AccountToken: md[token.HeaderAccountToken], UserToken: md[token.HeaderUserToken]}), nil, unaryInfo("/svc/M"), handler)
 		assert.NoError(t, err)
 	})
 
-	t.Run("no bearer scope denies token-only call", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
-		require.NoError(t, err)
-		_, err = auth.UnaryInterceptor()(authContext(token.Request{AccountToken: tok}), nil, unaryInfo("/svc/M"), handler)
+	t.Run("plain token denies token-only call", func(t *testing.T) {
+		_, err = auth.UnaryInterceptor()(authContext(token.Request{AccountToken: acctTok}), nil, unaryInfo("/svc/M"), handler)
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
-		assert.Contains(t, status.Convert(err).Message(), "bearer scope")
+		assert.Contains(t, status.Convert(err).Message(), "not a bearer token")
 	})
 }
 
@@ -201,7 +206,7 @@ func TestCredsEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(t.Context())
 	require.NoError(t, err)
-	claims, err := token.Verify(md[token.HeaderAccountToken], opPub)
+	claims, err := token.VerifyAccount(md[token.HeaderAccountToken], opPub)
 	require.NoError(t, err)
 	assert.NoError(t, token.VerifySignature(claims.PubKey, md[token.HeaderTimestamp], md[token.HeaderSignature], time.Now(), token.DefaultSkew))
 }

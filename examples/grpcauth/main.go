@@ -46,7 +46,7 @@ func main() {
 	listScope := grpcauth.ScopeForMethod(healthpb.Health_List_FullMethodName)
 	tok, err := token.Issue(operator, "acme", accountPub, []string{checkScope, listScope}, token.WithTTL(time.Hour))
 	check(err)
-	claims, err := token.Verify(tok, operatorPub)
+	claims, err := token.VerifyAccount(tok, operatorPub)
 	check(err)
 
 	// Server side: the operator public key and the allowlist are all the

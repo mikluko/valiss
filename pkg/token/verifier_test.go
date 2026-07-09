@@ -9,50 +9,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestVerifyCredentialBearer(t *testing.T) {
+func TestVerifyRequestBearer(t *testing.T) {
 	op, opPub := issuerKeys(t)
-	tenant, tenantPub := tenantKeys(t)
+	account, accountPub := tenantKeys(t)
+	user, userPub := userKeys(t)
 
-	bearerTok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer, "read"}, WithTTL(time.Hour))
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
 	require.NoError(t, err)
-	signedOnlyTok, err := Issue(op, "acme", tenantPub, []string{"read"}, WithTTL(time.Hour))
+	bearerTok, err := IssueUser(account, "carol", userPub, []string{"call:/svc/Get"}, WithBearer(), WithTTL(time.Hour))
+	require.NoError(t, err)
+	plainTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{})
 
-	t.Run("bearer scope allows unsigned request", func(t *testing.T) {
-		claims, err := v.VerifyRequest(Request{AccountToken: bearerTok})
+	t.Run("bearer user token allows unsigned request", func(t *testing.T) {
+		claims, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearerTok})
 		require.NoError(t, err)
 		assert.Equal(t, "acme", claims.TenantID)
+		assert.Equal(t, "carol", claims.UserID)
+		assert.True(t, claims.Bearer)
 	})
 
-	t.Run("no bearer scope rejects unsigned request", func(t *testing.T) {
-		_, err := v.VerifyRequest(Request{AccountToken: signedOnlyTok})
-		assert.ErrorContains(t, err, "bearer scope")
+	t.Run("plain user token rejects unsigned request", func(t *testing.T) {
+		_, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: plainTok})
+		assert.ErrorContains(t, err, "not a bearer token")
+	})
+
+	t.Run("account token alone rejects unsigned request", func(t *testing.T) {
+		_, err := v.VerifyRequest(Request{AccountToken: acctTok})
+		assert.ErrorContains(t, err, "not a bearer token")
 	})
 
 	t.Run("signature still verified when present on a bearer token", func(t *testing.T) {
-		ts, sig, err := SignRequest(tenant, time.Now())
+		ts, sig, err := SignRequest(user, time.Now())
 		require.NoError(t, err)
-		_, err = v.VerifyRequest(Request{AccountToken: bearerTok, Timestamp: ts, Signature: sig})
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearerTok, Timestamp: ts, Signature: sig})
 		assert.NoError(t, err)
 
-		_, err = v.VerifyRequest(Request{AccountToken: bearerTok, Timestamp: ts, Signature: "AAAA"})
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearerTok, Timestamp: ts, Signature: "AAAA"})
 		assert.Error(t, err, "bad signature must not fall back to bearer")
 	})
 
 	t.Run("partial credential is not bearer", func(t *testing.T) {
-		ts, _, err := SignRequest(tenant, time.Now())
+		ts, _, err := SignRequest(user, time.Now())
 		require.NoError(t, err)
-		_, err = v.VerifyRequest(Request{AccountToken: bearerTok, Timestamp: ts})
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearerTok, Timestamp: ts})
 		assert.Error(t, err, "timestamp without signature must fail")
-	})
-
-	t.Run("bearer wildcard not implied by call wildcard", func(t *testing.T) {
-		callAll, err := Issue(op, "acme", tenantPub, []string{"call:*"}, WithTTL(time.Hour))
-		require.NoError(t, err)
-		_, err = v.VerifyRequest(Request{AccountToken: callAll})
-		assert.ErrorContains(t, err, "bearer scope")
 	})
 }
 
@@ -116,43 +119,81 @@ func TestClaimsValidator(t *testing.T) {
 		_, err := v.VerifyRequest(Request{AccountToken: acctTok})
 		assert.ErrorIs(t, err, custom)
 	})
+
+	t.Run("typed extension validator", func(t *testing.T) {
+		type acctExt struct {
+			Plan string `json:"plan"`
+		}
+		type userExt struct {
+			Team string `json:"team"`
+		}
+		extTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithExtension(acctExt{Plan: "pro"}))
+		require.NoError(t, err)
+		extUserTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithExtension(userExt{Team: "red"}))
+		require.NoError(t, err)
+		ts, sig, err := SignRequest(user, time.Now())
+		require.NoError(t, err)
+
+		var gotAcct acctExt
+		var gotUser userExt
+		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(
+			ExtValidator(func(_ Request, _ *Claims, a acctExt, u userExt) error {
+				gotAcct, gotUser = a, u
+				return nil
+			}),
+		))
+		_, err = v.VerifyRequest(Request{AccountToken: extTok, UserToken: extUserTok, Timestamp: ts, Signature: sig})
+		require.NoError(t, err)
+		assert.Equal(t, acctExt{Plan: "pro"}, gotAcct)
+		assert.Equal(t, userExt{Team: "red"}, gotUser)
+	})
 }
 
 func TestValidityWindow(t *testing.T) {
 	op, opPub := issuerKeys(t)
-	_, tenantPub := tenantKeys(t)
+	tenant, tenantPub := tenantKeys(t)
 
 	t.Run("token without expiry never expires", func(t *testing.T) {
-		tok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer})
+		tok, err := Issue(op, "acme", tenantPub, nil)
 		require.NoError(t, err)
-		claims, err := Verify(tok, opPub)
+		claims, err := VerifyAccount(tok, opPub)
 		require.NoError(t, err)
 		assert.True(t, claims.ExpiresAt.IsZero())
 
-		farFuture := NewVerifier(opPub, AllowAll{}, WithClock(func() time.Time { return time.Now().Add(100 * 365 * 24 * time.Hour) }))
-		_, err = farFuture.VerifyRequest(Request{AccountToken: tok})
+		future := time.Now().Add(100 * 365 * 24 * time.Hour)
+		ts, sig, err := SignRequest(tenant, future)
+		require.NoError(t, err)
+		farFuture := NewVerifier(opPub, AllowAll{}, WithClock(func() time.Time { return future }))
+		_, err = farFuture.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
 		assert.NoError(t, err)
 	})
 
 	t.Run("not-before gates the token", func(t *testing.T) {
 		start := time.Now().Add(time.Hour)
-		tok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer}, WithTTL(2*time.Hour), WithNotBefore(start))
+		tok, err := Issue(op, "acme", tenantPub, nil, WithTTL(2*time.Hour), WithNotBefore(start))
 		require.NoError(t, err)
 
-		early := NewVerifier(opPub, AllowAll{}, WithSkew(0))
-		_, err = early.VerifyRequest(Request{AccountToken: tok})
+		now := time.Now()
+		ts, sig, err := SignRequest(tenant, now)
+		require.NoError(t, err)
+		early := NewVerifier(opPub, AllowAll{}, WithSkew(0), WithClock(func() time.Time { return now }))
+		_, err = early.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
 		assert.ErrorContains(t, err, "not yet valid")
 
-		inWindow := NewVerifier(opPub, AllowAll{}, WithSkew(0), WithClock(func() time.Time { return start.Add(time.Minute) }))
-		_, err = inWindow.VerifyRequest(Request{AccountToken: tok})
+		later := start.Add(time.Minute)
+		ts, sig, err = SignRequest(tenant, later)
+		require.NoError(t, err)
+		inWindow := NewVerifier(opPub, AllowAll{}, WithSkew(0), WithClock(func() time.Time { return later }))
+		_, err = inWindow.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
 		assert.NoError(t, err)
 	})
 
 	t.Run("user token not-before gates the chain", func(t *testing.T) {
 		account, accountPub := tenantKeys(t)
+		_, userPub := userKeys(t)
 		acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
 		require.NoError(t, err)
-		userTok, err := IssueUser(account, "carol", "", []string{ScopeBearer}, WithNotBefore(time.Now().Add(time.Hour)))
+		userTok, err := IssueUser(account, "carol", userPub, nil, WithBearer(), WithNotBefore(time.Now().Add(time.Hour)))
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithSkew(0))
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: userTok})
@@ -217,7 +258,7 @@ func TestAccountTokenResolver(t *testing.T) {
 	})
 }
 
-func TestVerifyCredentialChain(t *testing.T) {
+func TestVerifyRequestChain(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
@@ -253,7 +294,7 @@ func TestVerifyCredentialChain(t *testing.T) {
 		foreign, err := IssueUser(other, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: foreign, Timestamp: ts, Signature: sig})
-		assert.ErrorContains(t, err, "expected issuer")
+		assert.ErrorContains(t, err, "expected account")
 	})
 
 	t.Run("scope escalation clamped to the account grants", func(t *testing.T) {
@@ -263,27 +304,6 @@ func TestVerifyCredentialChain(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, claims.Authorizes("call:/svc/Get"))
 		assert.False(t, claims.Authorizes("call:/other/Get"), "scopes beyond the account grants must be clamped")
-	})
-
-	t.Run("bearer user makes token-only requests", func(t *testing.T) {
-		bearer, err := IssueUser(account, "carol", "", []string{ScopeBearer, "call:/svc/Get"}, WithTTL(time.Hour))
-		require.NoError(t, err)
-		claims, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearer})
-		require.NoError(t, err)
-		assert.Equal(t, "carol", claims.UserID)
-		assert.True(t, claims.HasScope(ScopeBearer), "bearer scope must survive clamping")
-	})
-
-	t.Run("signing user cannot go token-only", func(t *testing.T) {
-		_, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: userTok})
-		assert.ErrorContains(t, err, "bearer scope")
-	})
-
-	t.Run("signed request with a keyless bearer token rejected", func(t *testing.T) {
-		bearer, err := IssueUser(account, "carol", "", []string{ScopeBearer}, WithTTL(time.Hour))
-		require.NoError(t, err)
-		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearer, Timestamp: ts, Signature: sig})
-		assert.ErrorContains(t, err, "binds no key")
 	})
 
 	t.Run("expired user token rejected", func(t *testing.T) {
@@ -299,7 +319,7 @@ func TestVerifyCredentialChain(t *testing.T) {
 		require.NoError(t, err)
 		claims, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: short, Timestamp: ts, Signature: sig})
 		require.NoError(t, err)
-		acct, err := Verify(acctTok, opPub)
+		acct, err := VerifyAccount(acctTok, opPub)
 		require.NoError(t, err)
 		assert.True(t, claims.ExpiresAt.Before(acct.ExpiresAt))
 	})

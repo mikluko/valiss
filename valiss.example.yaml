@@ -53,8 +53,9 @@ accounts:
       - name: bob
         scopes:
           - call:/example.v1.WidgetService/GetWidget
-      # Explicit bearer: keyless, token-only credential that cannot sign
-      # requests. Replayable until expiry; keep the window short.
+      # Bearer: token-only credential that cannot sign requests; no seed is
+      # handed out (a keyless entry gets a throwaway pair at mint time).
+      # Replayable until expiry; keep the window short.
       - name: carol
         bearer: true
         scopes:

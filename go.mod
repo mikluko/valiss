@@ -3,7 +3,6 @@ module github.com/mikluko/valiss
 go 1.26.4
 
 require (
-	github.com/nats-io/jwt/v2 v2.8.2
 	github.com/nats-io/nkeys v0.4.16
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/grpc v1.82.0

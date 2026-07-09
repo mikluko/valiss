@@ -25,10 +25,14 @@ like `call:/pkg.Service/*` and `call:*` supported) and enable
 account's grants at verification, so a tenant can never delegate more than
 it holds.
 
-Bearer credentials: a token whose scopes include `bearer` authenticates
+Bearer credentials: a user token minted with the bearer flag authenticates
 without a per-request signature (token-only, replayable). Meant for user
 entries marked `bearer: true`, where handing out a seed is impractical; pair
-with TLS and short TTLs.
+with TLS and a short validity window. Accounts never get bearer tokens.
+
+Tokens carry valiss's own typed claims in an nkey-signed JWT; consumers can
+embed domain-specific claims via `token.WithExtension(v)` and validate them
+server-side with `token.ExtValidator` (typed) or `token.Ext[T]`.
 
 ## Layout
 
@@ -157,6 +161,6 @@ accounts:
         expires: 2026-07-16T00:00:00Z
         not_before: 2026-07-09T00:00:00Z  # optional activation time
       - name: carol
-        bearer: true         # keyless token-only credential
+        bearer: true         # token-only credential, no seed handed out
         scopes: ["call:/pkg.Svc/List"]
 ```

@@ -129,7 +129,7 @@ func TestCredsAccount(t *testing.T) {
 	assert.Empty(t, parsed.UserToken)
 	assert.Equal(t, f.acctSeed, string(parsed.Seed), "bundle carries the env-provided account seed")
 
-	claims, err := token.Verify(parsed.AccountToken, f.opPub)
+	claims, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, f.acctPub, claims.PubKey)
@@ -154,7 +154,7 @@ func TestCredsGeneratedAccount(t *testing.T) {
 	pub, err := kp.PublicKey()
 	require.NoError(t, err)
 
-	claims, err := token.Verify(parsed.AccountToken, f.opPub)
+	claims, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	assert.Equal(t, pub, claims.PubKey, "token binds the freshly generated key")
 	assert.True(t, meta.Account.Generated)
@@ -177,7 +177,7 @@ func TestCredsUser(t *testing.T) {
 	assert.Equal(t, f.userSeed, string(parsed.Seed))
 	assert.Empty(t, parsed.AccountToken, "account token omitted by default")
 
-	user, err := token.Verify(parsed.UserToken, f.acctPub)
+	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", user.TenantID)
 	assert.Equal(t, f.userPub, user.PubKey)
@@ -189,7 +189,7 @@ func TestCredsUser(t *testing.T) {
 	// A server with the account token in static configuration accepts it.
 	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
-	acct, err := token.Verify(acctTok, f.opPub)
+	acct, err := token.VerifyAccount(acctTok, f.opPub)
 	require.NoError(t, err)
 	resolver, err := token.StaticAccountTokens(acctTok)
 	require.NoError(t, err)
@@ -214,9 +214,9 @@ func TestCredsUserBundle(t *testing.T) {
 	parsed, meta := runCreds(t, f, "acme/alice", "-bundle")
 	assert.Equal(t, f.userSeed, string(parsed.Seed))
 
-	acct, err := token.Verify(parsed.AccountToken, f.opPub)
+	acct, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
-	user, err := token.Verify(parsed.UserToken, f.acctPub)
+	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 
 	require.NotNil(t, meta.Account)
@@ -262,7 +262,7 @@ func TestCredsGeneratedUser(t *testing.T) {
 	require.NotEmpty(t, parsed.Seed)
 	assert.True(t, meta.User.Generated)
 
-	user, err := token.Verify(parsed.UserToken, f.acctPub)
+	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 	kp, err := nkeys.FromSeed(parsed.Seed)
 	require.NoError(t, err)
@@ -281,19 +281,21 @@ func TestCredsBearerUser(t *testing.T) {
 	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
 
 	parsed, meta := runCreds(t, f, "acme/carol", "-bundle")
-	assert.Empty(t, parsed.Seed, "bearer bundle carries no seed")
-	assert.Empty(t, meta.User.Key)
+	assert.Empty(t, parsed.Seed, "bearer creds carry no seed even for a generated pair")
+	assert.NotEmpty(t, meta.User.Key, "the throwaway key still names the token subject")
+	assert.True(t, meta.User.Generated)
 
-	user, err := token.Verify(parsed.UserToken, f.acctPub)
+	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
-	assert.True(t, user.HasScope(token.ScopeBearer), "bearer scope is appended automatically")
+	assert.True(t, user.Bearer, "bearer flag set on the token")
 
-	acct, err := token.Verify(parsed.AccountToken, f.opPub)
+	acct, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID))
 	claims, err := v.VerifyRequest(token.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken})
 	require.NoError(t, err)
 	assert.Equal(t, "carol", claims.UserID)
+	assert.True(t, claims.Bearer)
 }
 
 func TestCredsFailures(t *testing.T) {

@@ -35,7 +35,7 @@ func TestIssueVerify(t *testing.T) {
 	token, err := Issue(op, "acme", tenantPub, []string{"read", "write"}, WithTTL(time.Hour))
 	require.NoError(t, err)
 
-	claims, err := Verify(token, opPub)
+	claims, err := VerifyAccount(token, opPub)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, tenantPub, claims.PubKey)
@@ -46,12 +46,12 @@ func TestIssueVerify(t *testing.T) {
 
 	t.Run("wrong issuer rejected", func(t *testing.T) {
 		_, otherPub := issuerKeys(t)
-		_, err := Verify(token, otherPub)
+		_, err := VerifyAccount(token, otherPub)
 		assert.ErrorContains(t, err, "expected issuer")
 	})
 
 	t.Run("tampered token rejected", func(t *testing.T) {
-		_, err := Verify(token[:len(token)-2]+"xx", opPub)
+		_, err := VerifyAccount(token[:len(token)-2]+"xx", opPub)
 		assert.Error(t, err)
 	})
 
@@ -64,9 +64,19 @@ func TestIssueVerify(t *testing.T) {
 	t.Run("expired", func(t *testing.T) {
 		short, err := Issue(op, "acme", tenantPub, nil, WithTTL(time.Second))
 		require.NoError(t, err)
-		c, err := Verify(short, opPub)
+		c, err := VerifyAccount(short, opPub)
 		require.NoError(t, err)
 		assert.True(t, c.Expired(c.ExpiresAt.Add(time.Minute), 0))
+	})
+
+	t.Run("account token is not a user token", func(t *testing.T) {
+		_, err := VerifyUser(token, opPub)
+		assert.ErrorContains(t, err, "not a user token")
+	})
+
+	t.Run("bearer option rejected", func(t *testing.T) {
+		_, err := Issue(op, "acme", tenantPub, nil, WithBearer())
+		assert.ErrorContains(t, err, "bearer applies only to user tokens")
 	})
 }
 
@@ -85,11 +95,12 @@ func TestIssueUser(t *testing.T) {
 
 	tok, err := IssueUser(account, "alice", userPub, []string{"read"}, WithTTL(time.Hour))
 	require.NoError(t, err)
-	claims, err := Verify(tok, accountPub)
+	claims, err := VerifyUser(tok, accountPub)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", claims.TenantID)
 	assert.Equal(t, userPub, claims.PubKey)
 	assert.True(t, claims.HasScope("read"))
+	assert.False(t, claims.Bearer)
 
 	t.Run("non-account-type signer rejected", func(t *testing.T) {
 		op, _ := issuerKeys(t)
@@ -97,20 +108,84 @@ func TestIssueUser(t *testing.T) {
 		assert.ErrorContains(t, err, "account-type nkey")
 	})
 
-	t.Run("keyless without bearer scope rejected", func(t *testing.T) {
+	t.Run("keyless rejected", func(t *testing.T) {
 		_, err := IssueUser(account, "carol", "", []string{"read"}, WithTTL(time.Hour))
-		assert.ErrorContains(t, err, "bearer")
+		assert.ErrorContains(t, err, "invalid user public key")
 	})
 
-	t.Run("keyless bearer token verifies", func(t *testing.T) {
-		tok, err := IssueUser(account, "carol", "", []string{ScopeBearer, "read"}, WithTTL(time.Hour))
+	t.Run("bearer flag round-trips", func(t *testing.T) {
+		tok, err := IssueUser(account, "carol", userPub, []string{"read"}, WithBearer(), WithTTL(time.Hour))
 		require.NoError(t, err)
-		claims, err := Verify(tok, accountPub)
+		claims, err := VerifyUser(tok, accountPub)
 		require.NoError(t, err)
-		assert.Empty(t, claims.PubKey)
-		assert.True(t, claims.HasScope(ScopeBearer))
+		assert.True(t, claims.Bearer)
 	})
 
+	t.Run("user token is not an account token", func(t *testing.T) {
+		_, err := VerifyAccount(tok, accountPub)
+		assert.ErrorContains(t, err, "not an account token")
+	})
+
+	t.Run("account key rejected as user key", func(t *testing.T) {
+		_, otherAcctPub := tenantKeys(t)
+		_, err := IssueUser(account, "alice", otherAcctPub, nil, WithTTL(time.Hour))
+		assert.ErrorContains(t, err, "invalid user public key")
+	})
+}
+
+func TestExtension(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	_, tenantPub := tenantKeys(t)
+
+	type domainClaims struct {
+		Plan  string `json:"plan"`
+		Quota int    `json:"quota"`
+	}
+
+	tok, err := Issue(op, "acme", tenantPub, nil, WithExtension(domainClaims{Plan: "pro", Quota: 42}))
+	require.NoError(t, err)
+	claims, err := VerifyAccount(tok, opPub)
+	require.NoError(t, err)
+	got, err := Ext[domainClaims](claims.AccountExt)
+	require.NoError(t, err)
+	assert.Equal(t, domainClaims{Plan: "pro", Quota: 42}, got)
+
+	t.Run("absent extension decodes to zero value", func(t *testing.T) {
+		plain, err := Issue(op, "acme", tenantPub, nil)
+		require.NoError(t, err)
+		claims, err := VerifyAccount(plain, opPub)
+		require.NoError(t, err)
+		got, err := Ext[domainClaims](claims.AccountExt)
+		require.NoError(t, err)
+		assert.Zero(t, got)
+	})
+
+	t.Run("unmarshalable extension rejected at issue", func(t *testing.T) {
+		_, err := Issue(op, "acme", tenantPub, nil, WithExtension(func() {}))
+		assert.ErrorContains(t, err, "encode extension")
+	})
+}
+
+func TestDecode(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	account, accountPub := tenantKeys(t)
+	_, userPub := userKeys(t)
+
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
+	require.NoError(t, err)
+	userTok, err := IssueUser(account, "alice", userPub, nil, WithBearer())
+	require.NoError(t, err)
+
+	acct, err := Decode(acctTok)
+	require.NoError(t, err)
+	assert.Equal(t, "acme", acct.TenantID)
+	assert.Equal(t, opPub, acct.Issuer)
+	assert.False(t, acct.ExpiresAt.IsZero())
+
+	user, err := Decode(userTok)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", user.TenantID)
+	assert.True(t, user.Bearer)
 }
 
 func TestSignVerifyRequest(t *testing.T) {

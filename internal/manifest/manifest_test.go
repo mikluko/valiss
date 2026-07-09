@@ -159,15 +159,15 @@ accounts:
 			wantErr: "not after",
 		},
 		{
-			name: "bearer and key mutually exclusive",
+			name: "account key rejected as user key",
 			yaml: `
 operator: ` + opPub + `
 accounts:
   - name: acme
     key: ` + acctPub + `
     scopes: ["call:*"]
-    users: [{name: alice, key: ` + userPub + `, bearer: true}]`,
-			wantErr: "mutually exclusive",
+    users: [{name: alice, key: ` + acctPub + `}]`,
+			wantErr: "user public key",
 		},
 		{
 			name: "duplicate user name",

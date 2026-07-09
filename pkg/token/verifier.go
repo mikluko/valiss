@@ -14,13 +14,6 @@ const (
 	HeaderSignature    = "valiss-signature"
 )
 
-// ScopeBearer is the scope a token must carry for its holder to make bearer
-// requests: the token alone, without the per-request signature. Bearer tokens
-// are replayable until they expire or leave the allowlist, so grant this only
-// to holders that cannot sign (no seed distribution) and pair it with TLS and
-// short TTLs.
-const ScopeBearer = "bearer"
-
 // Request is the per-request material a transport extracts from headers.
 type Request struct {
 	// AccountToken is the operator-signed account token.
@@ -47,8 +40,8 @@ type ClaimsValidator func(req Request, claims *Claims) error
 type AccountTokenResolver func(accountPubKey string) (string, error)
 
 // StaticAccountTokens builds a resolver over a fixed token set, e.g. from
-// server configuration. Tokens are indexed by their bound account key; their
-// signatures are checked here, their trust is established per request.
+// server configuration. Tokens are indexed by their subject account key;
+// their signatures are checked here, their trust is established per request.
 func StaticAccountTokens(tokens ...string) (AccountTokenResolver, error) {
 	byKey := make(map[string]string, len(tokens))
 	for _, tok := range tokens {
@@ -56,7 +49,7 @@ func StaticAccountTokens(tokens ...string) (AccountTokenResolver, error) {
 		if err != nil {
 			return nil, err
 		}
-		claims, err := Verify(tok, issuer)
+		claims, err := VerifyAccount(tok, issuer)
 		if err != nil {
 			return nil, err
 		}
@@ -74,9 +67,9 @@ func StaticAccountTokens(tokens ...string) (AccountTokenResolver, error) {
 // Verifier checks the full per-request credential: account token signature
 // against the pinned operator key, expiry, allowlist membership, the optional
 // user-token chain, and the request signature within the skew window.
-// Requests without a signature pass only when the effective token grants
-// ScopeBearer. Transport layers (gRPC interceptor, HTTP middleware) wrap it
-// with header extraction and error mapping.
+// Requests without a signature pass only when the effective token is a
+// bearer user token. Transport layers (gRPC interceptor, HTTP middleware)
+// wrap it with header extraction and error mapping.
 type Verifier struct {
 	operatorPubKey string
 	allowlist      Allowlist
@@ -106,6 +99,24 @@ func WithClaimsValidator(fn ClaimsValidator) VerifierOption {
 	return func(v *Verifier) { v.validators = append(v.validators, fn) }
 }
 
+// ExtValidator adapts a typed validator over the tokens' extension claims
+// (WithExtension) into a ClaimsValidator: the account and user extensions
+// are decoded into A and U before fn runs. Missing extensions decode to
+// zero values.
+func ExtValidator[A, U any](fn func(req Request, claims *Claims, acct A, user U) error) ClaimsValidator {
+	return func(req Request, claims *Claims) error {
+		acct, err := Ext[A](claims.AccountExt)
+		if err != nil {
+			return err
+		}
+		user, err := Ext[U](claims.UserExt)
+		if err != nil {
+			return err
+		}
+		return fn(req, claims, acct, user)
+	}
+}
+
 // WithAccountTokenResolver accepts requests that carry only a user token,
 // resolving the account token server-side. Without it such requests are
 // rejected.
@@ -132,13 +143,12 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 //
 // A credential with a user token is verified as a chain: the account token
 // against the operator key and the allowlist, then the user token against
-// the account token's bound key. The effective scopes are the user's
+// the account token's subject key. The effective scopes are the user's
 // scopes clamped to those the tenant holds, so a tenant can never delegate
-// more than it has; ScopeBearer passes through unclamped because it selects
-// an authentication mode, not an authorization grant.
+// more than it has.
 //
 // An empty timestamp and signature is a bearer request, accepted only when
-// the effective token grants ScopeBearer.
+// the effective token is a bearer user token.
 func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 	if req.AccountToken == "" {
 		if req.UserToken == "" {
@@ -157,7 +167,7 @@ func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 		}
 		req.AccountToken = tok
 	}
-	claims, err := Verify(req.AccountToken, v.operatorPubKey)
+	claims, err := VerifyAccount(req.AccountToken, v.operatorPubKey)
 	if err != nil {
 		return nil, err
 	}
@@ -172,7 +182,7 @@ func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 		return nil, errors.New("valiss: account token not recognized")
 	}
 	if req.UserToken != "" {
-		user, err := Verify(req.UserToken, claims.PubKey)
+		user, err := VerifyUser(req.UserToken, claims.PubKey)
 		if err != nil {
 			return nil, err
 		}
@@ -184,18 +194,21 @@ func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 		}
 		scopes := make([]string, 0, len(user.Scopes))
 		for _, s := range user.Scopes {
-			if s == ScopeBearer || Covered(claims.Scopes, s) {
+			if Covered(claims.Scopes, s) {
 				scopes = append(scopes, s)
 			}
 		}
 		claims = &Claims{
-			TenantID:  claims.TenantID,
-			UserID:    user.TenantID,
-			PubKey:    user.PubKey,
-			Scopes:    scopes,
-			ID:        claims.ID,
-			Issuer:    claims.Issuer,
-			ExpiresAt: minExpiry(claims.ExpiresAt, user.ExpiresAt),
+			TenantID:   claims.TenantID,
+			UserID:     user.TenantID,
+			PubKey:     user.PubKey,
+			Scopes:     scopes,
+			Bearer:     user.Bearer,
+			ID:         claims.ID,
+			Issuer:     claims.Issuer,
+			ExpiresAt:  minExpiry(claims.ExpiresAt, user.ExpiresAt),
+			AccountExt: claims.AccountExt,
+			UserExt:    user.UserExt,
 		}
 	}
 	for _, validate := range v.validators {
@@ -204,13 +217,10 @@ func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 		}
 	}
 	if req.Timestamp == "" && req.Signature == "" {
-		if !claims.HasScope(ScopeBearer) {
-			return nil, errors.New("valiss: request signature required: token does not grant the bearer scope")
+		if !claims.Bearer {
+			return nil, errors.New("valiss: request signature required: not a bearer token")
 		}
 		return claims, nil
-	}
-	if claims.PubKey == "" {
-		return nil, errors.New("valiss: request signature present but token binds no key")
 	}
 	if err := VerifySignature(claims.PubKey, req.Timestamp, req.Signature, now, v.skew); err != nil {
 		return nil, err

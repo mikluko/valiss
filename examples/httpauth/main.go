@@ -36,7 +36,7 @@ func main() {
 
 	tok, err := token.Issue(operator, "acme", accountPub, []string{"call:/v1/*"}, token.WithTTL(time.Hour))
 	check(err)
-	claims, err := token.Verify(tok, operatorPub)
+	claims, err := token.VerifyAccount(tok, operatorPub)
 	check(err)
 	rendered := creds.Format(creds.Creds{AccountToken: tok, Seed: accountSeed})
 

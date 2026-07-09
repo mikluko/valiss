@@ -111,15 +111,22 @@ func TestMiddlewareScope(t *testing.T) {
 
 func TestBearerTransport(t *testing.T) {
 	op, opPub := issuerKeys(t)
-	_, tenantPub, _ := tenantKeys(t)
+	account, accountPub, _ := tenantKeys(t)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userPub, err := user.PublicKey()
+	require.NoError(t, err)
+
+	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, token.WithTTL(time.Hour))
+	require.NoError(t, err)
 	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	t.Run("bearer scope allows token-only request", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, token.WithTTL(time.Hour))
+	t.Run("bearer user token allows token-only request", func(t *testing.T) {
+		bearerTok, err := token.IssueUser(account, "carol", userPub, []string{"call:*"}, token.WithBearer(), token.WithTTL(time.Hour))
 		require.NoError(t, err)
-		client := newClient(t, creds.Creds{AccountToken: tok})
+		client := newClient(t, creds.Creds{AccountToken: acctTok, UserToken: bearerTok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -129,16 +136,14 @@ func TestBearerTransport(t *testing.T) {
 		assert.Equal(t, "acme", string(body))
 	})
 
-	t.Run("no bearer scope denies token-only request", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
-		require.NoError(t, err)
-		client := newClient(t, creds.Creds{AccountToken: tok})
+	t.Run("plain token denies token-only request", func(t *testing.T) {
+		client := newClient(t, creds.Creds{AccountToken: acctTok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
-		assert.Contains(t, string(body), "bearer scope")
+		assert.Contains(t, string(body), "not a bearer token")
 	})
 }
 
@@ -147,7 +152,7 @@ func TestMiddlewareRejections(t *testing.T) {
 	tenant, tenantPub, seed := tenantKeys(t)
 	tok, err := token.Issue(op, "acme", tenantPub, nil, token.WithTTL(time.Hour))
 	require.NoError(t, err)
-	claims, err := token.Verify(tok, opPub)
+	claims, err := token.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
 
 	mw := NewMiddleware(token.NewVerifier(opPub, token.NewStaticAllowlist(claims.ID)))

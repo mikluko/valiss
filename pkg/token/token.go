@@ -1,53 +1,53 @@
 // Package token implements the core of the tenant authentication scheme,
-// modeled on NATS operator/account credentials:
+// modeled on NATS operator/account/user credentials:
 //
-//   - An issuer holds an Ed25519 nkey; its public key is the trust anchor
+//   - An operator holds an Ed25519 nkey; its public key is the trust anchor
 //     servers pin.
-//   - The issuer signs each tenant a scoped, time-limited JWT that binds the
-//     tenant's own nkey public key. Issued tokens are recorded in a
-//     server-side allowlist.
-//   - The tenant signs every request with its nkey; the server verifies the
-//     token against the issuer key, the request signature against the
-//     token's bound key, and the token against the allowlist, then hands the
-//     tenant identity to the handler for data segmentation.
+//   - The operator signs each tenant a scoped account token that the
+//     tenant's own account nkey must back. Issued account tokens are
+//     recorded in a server-side allowlist.
+//   - A tenant may delegate: it signs user tokens with its account seed,
+//     granting end users a subset of its scopes.
+//   - The subject signs every request with its nkey; the server verifies the
+//     token chain up to the pinned operator key, the request signature
+//     against the token's subject key, and the account token against the
+//     allowlist, then hands the tenant (and user) identity to the handler
+//     for data segmentation.
 //
-// In nkeys terms the issuer key is an operator-type key (SO... seed, O...
-// public key) and the tenant key is an account-type key (SA.../A...),
-// mirroring the NATS Operator -> Account levels; "issuer" and "tenant" are
-// this scheme's names for the roles. The mapping leaves room for a future
-// Account -> User level where a tenant signs scoped user tokens with its
-// account seed, so tenant keys must stay account-type and the tenant public
-// key stays required even for bearer-scoped tokens.
+// Tokens are this scheme's own typed claims carried in an nkey-signed JWT:
+// the sub claim is the subject's public key and name carries the
+// human-readable label, as in NATS. Key levels are strict: operator keys
+// (SO.../O...) sign account tokens for account keys (SA.../A...), account
+// keys sign user tokens for user keys (SU.../U...).
 package token
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 )
-
-// Scopes carried in the token's custom claims. The subject's public key
-// needs no custom claim: as in NATS, the JWT sub claim is the key itself and
-// the human-readable label lives in the name field.
-const scopesClaim = "scopes"
 
 // Claims is the verified content of a token.
 type Claims struct {
 	// TenantID identifies the tenant; it segments all stored data.
 	TenantID string
 	// UserID identifies the end user on chain-verified requests, where an
-	// account-signed user token accompanies the account token. Empty when the
-	// tenant itself made the request.
+	// account-signed user token accompanies the account token. Empty when
+	// the tenant itself made the request.
 	UserID string
-	// PubKey is the tenant's nkey public key that must sign requests.
+	// PubKey is the subject's nkey public key (the JWT sub claim) that must
+	// sign requests.
 	PubKey string
-	// Scopes granted to the tenant.
+	// Scopes granted to the subject.
 	Scopes []string
+	// Bearer marks a user token whose holder authenticates by the token
+	// alone, without per-request signatures.
+	Bearer bool
 	// ID is the token's unique identifier (jti), the allowlist key.
 	ID string
 	// Issuer is the issuer public key that signed the token.
@@ -56,126 +56,215 @@ type Claims struct {
 	ExpiresAt time.Time
 	// NotBefore is the token activation time; zero means immediately valid.
 	NotBefore time.Time
+	// AccountExt and UserExt carry the consumer-defined extension claims of
+	// the account and user tokens (WithExtension), verbatim. Decode them
+	// with Ext or validate them with ExtValidator.
+	AccountExt json.RawMessage
+	UserExt    json.RawMessage
+}
+
+// issueConfig collects IssueOption effects.
+type issueConfig struct {
+	expires   int64
+	notBefore int64
+	bearer    bool
+	ext       json.RawMessage
+	err       error
 }
 
 // IssueOption customizes a minted token. Without a WithTTL or WithExpiry
 // option the token never expires, matching nsc's default.
-type IssueOption func(*jwt.GenericClaims)
+type IssueOption func(*issueConfig)
 
 // WithTTL makes the token expire ttl from now (the JWT exp claim).
 func WithTTL(ttl time.Duration) IssueOption {
-	return func(gc *jwt.GenericClaims) { gc.Expires = time.Now().Add(ttl).Unix() }
+	return func(c *issueConfig) { c.expires = time.Now().Add(ttl).Unix() }
 }
 
 // WithExpiry makes the token expire at t (the JWT exp claim).
 func WithExpiry(t time.Time) IssueOption {
-	return func(gc *jwt.GenericClaims) { gc.Expires = t.Unix() }
+	return func(c *issueConfig) { c.expires = t.Unix() }
 }
 
 // WithNotBefore makes the token invalid before t (the JWT nbf claim), like
 // nsc's --start.
 func WithNotBefore(t time.Time) IssueOption {
-	return func(gc *jwt.GenericClaims) { gc.NotBefore = t.Unix() }
+	return func(c *issueConfig) { c.notBefore = t.Unix() }
+}
+
+// WithBearer marks a user token as a bearer token: the server accepts it
+// without per-request signatures. Bearer tokens are replayable until they
+// expire or their account leaves the allowlist, so pair them with TLS and a
+// short validity window. Only IssueUser accepts this option.
+func WithBearer() IssueOption {
+	return func(c *issueConfig) { c.bearer = true }
+}
+
+// WithExtension embeds consumer-defined claims into the token's ext field.
+// The scheme signs and transports them untouched; servers read them back
+// via Claims.AccountExt/UserExt, the Ext helper, or an ExtValidator.
+func WithExtension(v any) IssueOption {
+	return func(c *issueConfig) {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			c.err = fmt.Errorf("valiss: encode extension: %w", err)
+			return
+		}
+		c.ext = raw
+	}
 }
 
 // Issue mints an account token signed by the operator key. As in NATS, the
-// token subject is the tenant's public key and name carries the tenant id;
-// the tenant signs requests with the seed matching the subject key. Validity
-// comes from IssueOptions; without one the token never expires.
+// token subject is the tenant's account public key and name carries the
+// tenant id; the tenant signs requests with the seed matching the subject
+// key.
 func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, opts ...IssueOption) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
-		return "", fmt.Errorf("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
+		return "", errors.New("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
-	if !nkeys.IsValidPublicUserKey(tenantPubKey) && !nkeys.IsValidPublicAccountKey(tenantPubKey) {
-		return "", fmt.Errorf("valiss: invalid tenant public key")
+	if !nkeys.IsValidPublicAccountKey(tenantPubKey) {
+		return "", errors.New("valiss: invalid tenant public key (expected an A... nkey)")
 	}
-	gc := jwt.NewGenericClaims(tenantPubKey)
-	gc.Name = tenantID
-	gc.Data[scopesClaim] = scopes
+	var cfg issueConfig
 	for _, opt := range opts {
-		opt(gc)
+		opt(&cfg)
 	}
-	token, err := gc.Encode(operator)
-	if err != nil {
-		return "", fmt.Errorf("valiss: encode token: %w", err)
+	if cfg.err != nil {
+		return "", cfg.err
 	}
-	return token, nil
+	if cfg.bearer {
+		return "", errors.New("valiss: bearer applies only to user tokens")
+	}
+	return encodeToken(operator, &wire[accountBody]{
+		Name:      tenantID,
+		Subject:   tenantPubKey,
+		Expires:   cfg.expires,
+		NotBefore: cfg.notBefore,
+		Valiss:    accountBody{Type: accountType, Scopes: scopes, Ext: cfg.ext},
+	})
 }
 
 // IssueUser mints a user token signed by a tenant's account key, delegating
 // a subset of the tenant's access to an end user. As in NATS, the token
-// subject is the user's public key and name carries the user id. userPubKey
-// may be empty only when scopes grant ScopeBearer, producing a token-only
-// credential for users that cannot sign requests. Validity comes from
-// IssueOptions; without one the token never expires.
+// subject is the user's public key and name carries the user id. WithBearer
+// produces a token the server accepts without per-request signatures.
 func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string, opts ...IssueOption) (string, error) {
 	if pub, err := account.PublicKey(); err != nil || !nkeys.IsValidPublicAccountKey(pub) {
-		return "", fmt.Errorf("valiss: user tokens must be signed by an account-type nkey (expected an SA... seed)")
+		return "", errors.New("valiss: user tokens must be signed by an account-type nkey (expected an SA... seed)")
 	}
-	if userPubKey == "" {
-		if !slices.Contains(scopes, ScopeBearer) {
-			return "", fmt.Errorf("valiss: user token without a key requires the %q scope", ScopeBearer)
-		}
-	} else if !nkeys.IsValidPublicUserKey(userPubKey) && !nkeys.IsValidPublicAccountKey(userPubKey) {
-		return "", fmt.Errorf("valiss: invalid user public key")
+	if !nkeys.IsValidPublicUserKey(userPubKey) {
+		return "", errors.New("valiss: invalid user public key (expected a U... nkey)")
 	}
-	// Keyless bearer tokens have nothing to put in sub but the name.
-	sub := userPubKey
-	if sub == "" {
-		sub = userID
-	}
-	gc := jwt.NewGenericClaims(sub)
-	gc.Name = userID
-	gc.Data[scopesClaim] = scopes
+	var cfg issueConfig
 	for _, opt := range opts {
-		opt(gc)
+		opt(&cfg)
 	}
-	token, err := gc.Encode(account)
-	if err != nil {
-		return "", fmt.Errorf("valiss: encode user token: %w", err)
+	if cfg.err != nil {
+		return "", cfg.err
 	}
-	return token, nil
+	return encodeToken(account, &wire[userBody]{
+		Name:      userID,
+		Subject:   userPubKey,
+		Expires:   cfg.expires,
+		NotBefore: cfg.notBefore,
+		Valiss:    userBody{Type: userType, Scopes: scopes, Bearer: cfg.bearer, Ext: cfg.ext},
+	})
 }
 
-// Verify decodes a token, checks its signature and issuer, and returns the
-// claims. The claims' TenantID carries the token subject, whichever level the
-// token is for. Verify does NOT check expiry or the allowlist; the Verifier
-// layers those so callers get precise errors. A token may omit the bound key
-// only when its scopes grant ScopeBearer.
-func Verify(token, issuerPubKey string) (*Claims, error) {
-	gc, err := jwt.DecodeGeneric(token)
+// VerifyAccount decodes an account token, checks its type, signature, and
+// issuer, and returns the claims. It does NOT check expiry, activation, or
+// the allowlist; the Verifier layers those so callers get precise errors.
+func VerifyAccount(token, operatorPubKey string) (*Claims, error) {
+	c, err := decodeToken[accountBody](token)
 	if err != nil {
-		return nil, fmt.Errorf("valiss: %w", err)
+		return nil, err
 	}
-	if gc.Issuer != issuerPubKey {
-		return nil, fmt.Errorf("valiss: token not signed by the expected issuer")
+	if c.Valiss.Type != accountType {
+		return nil, fmt.Errorf("valiss: not an account token (type %q)", c.Valiss.Type)
 	}
-	var pubKey string
-	if nkeys.IsValidPublicAccountKey(gc.Subject) || nkeys.IsValidPublicUserKey(gc.Subject) {
-		pubKey = gc.Subject
+	if c.Issuer != operatorPubKey {
+		return nil, errors.New("valiss: account token not signed by the expected issuer")
 	}
-	scopes := toStrings(gc.Data[scopesClaim])
-	if pubKey == "" && !slices.Contains(scopes, ScopeBearer) {
-		return nil, errors.New("valiss: token subject is not a key and scopes do not grant bearer")
+	if !nkeys.IsValidPublicAccountKey(c.Subject) {
+		return nil, errors.New("valiss: account token subject is not an account public key")
 	}
-	name := gc.Name
+	claims := claimsOf(c, c.Valiss.Scopes, false)
+	claims.AccountExt = c.Valiss.Ext
+	return claims, nil
+}
+
+// VerifyUser decodes a user token, checks its type, signature, and issuer
+// (the account public key that delegated it), and returns the claims.
+// Expiry and activation checks belong to the Verifier.
+func VerifyUser(token, accountPubKey string) (*Claims, error) {
+	c, err := decodeToken[userBody](token)
+	if err != nil {
+		return nil, err
+	}
+	if c.Valiss.Type != userType {
+		return nil, fmt.Errorf("valiss: not a user token (type %q)", c.Valiss.Type)
+	}
+	if c.Issuer != accountPubKey {
+		return nil, errors.New("valiss: user token not signed by the expected account")
+	}
+	if !nkeys.IsValidPublicUserKey(c.Subject) {
+		return nil, errors.New("valiss: user token subject is not a user public key")
+	}
+	claims := claimsOf(c, c.Valiss.Scopes, c.Valiss.Bearer)
+	claims.UserExt = c.Valiss.Ext
+	return claims, nil
+}
+
+// Decode parses a token of either level without establishing trust: the
+// signature is checked against the token's own embedded issuer only. For
+// inspection and tooling; servers must use VerifyAccount or VerifyUser.
+func Decode(token string) (*Claims, error) {
+	c, err := decodeToken[anyBody](token)
+	if err != nil {
+		return nil, err
+	}
+	claims := claimsOf(c, c.Valiss.Scopes, c.Valiss.Bearer)
+	switch c.Valiss.Type {
+	case accountType:
+		claims.AccountExt = c.Valiss.Ext
+	case userType:
+		claims.UserExt = c.Valiss.Ext
+	}
+	return claims, nil
+}
+
+// Ext decodes an extension claim into T. Empty raw yields the zero value.
+func Ext[T any](raw json.RawMessage) (T, error) {
+	var v T
+	if len(raw) == 0 {
+		return v, nil
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return v, fmt.Errorf("valiss: decode extension: %w", err)
+	}
+	return v, nil
+}
+
+func claimsOf[B any](c *wire[B], scopes []string, bearer bool) *Claims {
+	name := c.Name
 	if name == "" {
-		name = gc.Subject
+		name = c.Subject
 	}
 	claims := &Claims{
 		TenantID: name,
-		PubKey:   pubKey,
+		PubKey:   c.Subject,
 		Scopes:   scopes,
-		ID:       gc.ID,
-		Issuer:   gc.Issuer,
+		Bearer:   bearer,
+		ID:       c.ID,
+		Issuer:   c.Issuer,
 	}
-	if gc.Expires != 0 {
-		claims.ExpiresAt = time.Unix(gc.Expires, 0)
+	if c.Expires != 0 {
+		claims.ExpiresAt = time.Unix(c.Expires, 0)
 	}
-	if gc.NotBefore != 0 {
-		claims.NotBefore = time.Unix(gc.NotBefore, 0)
+	if c.NotBefore != 0 {
+		claims.NotBefore = time.Unix(c.NotBefore, 0)
 	}
-	return claims, nil
+	return claims
 }
 
 // Expired reports whether the token has passed its expiry (with skew slack).
@@ -189,7 +278,7 @@ func (c *Claims) NotYetValid(now time.Time, skew time.Duration) bool {
 	return !c.NotBefore.IsZero() && now.Add(skew).Before(c.NotBefore)
 }
 
-// HasScope reports whether the tenant holds an exact scope grant.
+// HasScope reports whether the subject holds an exact scope grant.
 func (c *Claims) HasScope(scope string) bool {
 	return slices.Contains(c.Scopes, scope)
 }
@@ -205,11 +294,11 @@ func (c *Claims) Authorizes(required string) bool {
 // token's own signature against it. It does not establish trust: the caller
 // must still verify the issuer's place in the chain.
 func IssuerOf(token string) (string, error) {
-	gc, err := jwt.DecodeGeneric(token)
+	c, err := decodeToken[struct{}](token)
 	if err != nil {
-		return "", fmt.Errorf("valiss: %w", err)
+		return "", err
 	}
-	return gc.Issuer, nil
+	return c.Issuer, nil
 }
 
 // Covered reports whether any granted scope covers the required scope,
@@ -228,18 +317,4 @@ func scopeMatch(granted, required string) bool {
 		return strings.HasPrefix(required, prefix)
 	}
 	return granted == required
-}
-
-func toStrings(v any) []string {
-	raw, ok := v.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	for _, e := range raw {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
 }

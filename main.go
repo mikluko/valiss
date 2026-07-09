@@ -25,11 +25,9 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"gopkg.in/yaml.v3"
 
@@ -272,30 +270,26 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 		bundle.AccountToken = tok
 		acctMeta = &meta
 	}
-	scopes := user.Scopes
-	var (
-		userPub   string
-		generated bool
-	)
+	subject, generated, err := subjectKey(user.Key, nkeys.CreateUser)
+	if err != nil {
+		return err
+	}
+	userPub, err := subject.PublicKey()
+	if err != nil {
+		return err
+	}
+	opts := validity(user.Expires, user.NotBefore)
 	if user.Bearer {
-		if !slices.Contains(scopes, token.ScopeBearer) {
-			scopes = append(slices.Clip(scopes), token.ScopeBearer)
-		}
+		// Bearer creds carry no seed: for a generated pair the seed is
+		// discarded, making the token the sole credential.
+		opts = append(opts, token.WithBearer())
 	} else {
-		subject, gen, err := subjectKey(user.Key, nkeys.CreateUser)
-		if err != nil {
-			return err
-		}
-		if userPub, err = subject.PublicKey(); err != nil {
-			return err
-		}
 		if bundle.Seed, err = subject.Seed(); err != nil {
 			return err
 		}
-		generated = gen
 	}
 	userTok, userMeta, err := mintToken(func() (string, error) {
-		return token.IssueUser(account, user.Name, userPub, scopes, validity(user.Expires, user.NotBefore)...)
+		return token.IssueUser(account, user.Name, userPub, user.Scopes, opts...)
 	}, user.Name, userPub, generated)
 	if err != nil {
 		return err
@@ -314,7 +308,7 @@ func mintToken(issue func() (string, error), name, pub string, generated bool) (
 		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", name, err)
 	}
 	// The token was minted in-process; decoding only re-reads its claims.
-	gc, err := jwt.DecodeGeneric(tok)
+	claims, err := token.Decode(tok)
 	if err != nil {
 		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", name, err)
 	}
@@ -322,13 +316,13 @@ func mintToken(issue func() (string, error), name, pub string, generated bool) (
 		Name:      name,
 		Key:       pub,
 		Generated: generated,
-		JTI:       gc.ID,
+		JTI:       claims.ID,
 	}
-	if gc.Expires != 0 {
-		meta.Expires = time.Unix(gc.Expires, 0).UTC().Format(time.RFC3339)
+	if !claims.ExpiresAt.IsZero() {
+		meta.Expires = claims.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	if gc.NotBefore != 0 {
-		meta.NotBefore = time.Unix(gc.NotBefore, 0).UTC().Format(time.RFC3339)
+	if !claims.NotBefore.IsZero() {
+		meta.NotBefore = claims.NotBefore.UTC().Format(time.RFC3339)
 	}
 	return tok, meta, nil
 }

@@ -33,8 +33,9 @@ type User struct {
 	// VALISS_SEED_<key>. Absent means a fresh key pair is generated at mint
 	// time. Mutually exclusive with Bearer.
 	Key string `yaml:"key,omitempty"`
-	// Bearer marks a keyless token-only user; the minted token grants the
-	// bearer scope and the credential cannot sign requests.
+	// Bearer marks a token-only user: the server accepts its token without
+	// per-request signatures and the creds carry no seed. A user without a
+	// key gets a throwaway pair at mint time.
 	Bearer bool `yaml:"bearer,omitempty"`
 	// Scopes granted to the user; each must be covered by the account's
 	// scopes.
@@ -148,19 +149,13 @@ func validateAccount(a Account) error {
 			return fmt.Errorf("duplicate user name %q", u.Name)
 		}
 		seen[u.Name] = true
-		if u.Bearer && u.Key != "" {
-			return fmt.Errorf("user %q: bearer and key are mutually exclusive", u.Name)
-		}
-		if u.Key != "" && !nkeys.IsValidPublicUserKey(u.Key) && !nkeys.IsValidPublicAccountKey(u.Key) {
-			return fmt.Errorf("user %q: key is not a valid user public key", u.Name)
+		if u.Key != "" && !nkeys.IsValidPublicUserKey(u.Key) {
+			return fmt.Errorf("user %q: key is not a valid user public key (expected a U... nkey)", u.Name)
 		}
 		if err := validateWindow(u.Expires, u.NotBefore); err != nil {
 			return fmt.Errorf("user %q: %w", u.Name, err)
 		}
 		for _, s := range u.Scopes {
-			if s == token.ScopeBearer {
-				continue
-			}
 			if !token.Covered(a.Scopes, s) {
 				return fmt.Errorf("user %q: scope %q is not covered by the account scopes", u.Name, s)
 			}
