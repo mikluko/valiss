@@ -19,12 +19,12 @@ import (
 
 // Creds file markers.
 const (
-	tokenBegin     = "-----BEGIN VALISS TOKEN-----"
-	tokenEnd       = "------END VALISS TOKEN------"
-	userTokenBegin = "-----BEGIN VALISS USER TOKEN-----"
-	userTokenEnd   = "------END VALISS USER TOKEN------"
-	seedBegin      = "-----BEGIN VALISS SEED-----"
-	seedEnd        = "------END VALISS SEED------"
+	accountTokenBegin = "-----BEGIN VALISS ACCOUNT TOKEN-----"
+	accountTokenEnd   = "------END VALISS ACCOUNT TOKEN------"
+	userTokenBegin    = "-----BEGIN VALISS USER TOKEN-----"
+	userTokenEnd      = "------END VALISS USER TOKEN------"
+	seedBegin         = "-----BEGIN VALISS SEED-----"
+	seedEnd           = "------END VALISS SEED------"
 )
 
 // Creds is the parsed content of a creds file.
@@ -46,7 +46,7 @@ type Creds struct {
 func Format(b Creds) string {
 	var sb strings.Builder
 	if b.Token != "" {
-		fmt.Fprintf(&sb, "%s\n%s\n%s\n", tokenBegin, strings.TrimSpace(b.Token), tokenEnd)
+		fmt.Fprintf(&sb, "%s\n%s\n%s\n", accountTokenBegin, strings.TrimSpace(b.Token), accountTokenEnd)
 	}
 	if b.UserToken != "" {
 		if b.Token != "" {
@@ -66,7 +66,7 @@ func Format(b Creds) string {
 // on its own, but at least one token must be present.
 func Parse(contents string) (Creds, error) {
 	var b Creds
-	tok, ok, err := between(contents, tokenBegin, tokenEnd)
+	tok, ok, err := between(contents, accountTokenBegin, accountTokenEnd)
 	if err != nil {
 		return Creds{}, fmt.Errorf("valiss: creds token: %w", err)
 	}

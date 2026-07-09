@@ -38,7 +38,7 @@ func TestRoundTrip(t *testing.T) {
 	t.Run("user-only creds have no account token section", func(t *testing.T) {
 		b := Creds{UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
 		rendered := Format(b)
-		assert.NotContains(t, rendered, "BEGIN VALISS TOKEN")
+		assert.NotContains(t, rendered, "BEGIN VALISS ACCOUNT TOKEN")
 		got, err := Parse(rendered)
 		require.NoError(t, err)
 		assert.Equal(t, b, got)
@@ -61,9 +61,9 @@ func TestParseMissingMarker(t *testing.T) {
 }
 
 func TestParseUnclosedSection(t *testing.T) {
-	_, err := Parse("-----BEGIN VALISS TOKEN-----\n" + testToken + "\n")
+	_, err := Parse("-----BEGIN VALISS ACCOUNT TOKEN-----\n" + testToken + "\n")
 	require.NoError(t, err, "content line closes the read")
 
-	_, err = Parse("-----BEGIN VALISS TOKEN-----\n")
+	_, err = Parse("-----BEGIN VALISS ACCOUNT TOKEN-----\n")
 	assert.ErrorContains(t, err, "not closed")
 }
