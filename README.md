@@ -1,20 +1,38 @@
 # valiss
 
-**VAL**idator-**ISS**uer: a Go library for tenant authentication in gRPC and
-HTTP services, modeled on NATS operator/account/user credentials.
+**VAL**idator-**ISS**uer: decentralized tenant authentication for Go
+services, gRPC and HTTP, modeled on NATS operator/account/user credentials.
 
-- An **operator** holds an Ed25519 nkey; its public key is the trust anchor.
-- The operator signs each **account** (tenant) a time-limited token that
-  binds the account's own nkey public key. Issued token ids go in a
-  server-side allowlist.
-- An account may delegate: it signs **user** tokens with its account seed.
-  Servers verify the chain up to the pinned operator key; nothing else needs
-  distribution.
-- The client **signs every request** with its nkey over a timestamp. The
-  server verifies the token (chain) against the operator key, the signature
-  against the subject key within a skew window, and the account token id
-  against the allowlist, then hands the tenant (and user) identity to the
-  handler for data segmentation.
+Most multi-tenant services end up with a central auth dependency: an OAuth
+provider, a session store, a per-tenant key registry — something every
+request has to consult and every deployment has to keep alive. valiss takes
+the NATS approach instead. Trust is a single public key baked into the
+server; everything else is self-contained signed credentials that verify
+offline. There is no auth service to run, no token introspection endpoint to
+call, and issuing credentials never touches production infrastructure.
+
+Where it fits:
+
+- **Multi-tenant APIs.** Each customer is an account with its own keypair.
+  You sign one account credential per customer; they mint their own user and
+  service credentials from it, scoped down as they see fit, without asking
+  you.
+- **Machine-to-machine auth.** Services and agents authenticate with keys
+  and per-request signatures — no shared secrets, no password rotation, and
+  a stolen token is useless without the key that signs requests.
+- **Edge and on-prem.** Verifiers need only the operator public key (plus an
+  allowlist and, optionally, account tokens in static config), so isolated
+  deployments authenticate the same way as connected ones.
+- **Browsers and other weak clients.** Short-lived bearer user tokens cover
+  clients that cannot hold a key.
+
+How it works, in one paragraph: an **operator** key signs **account**
+(tenant) tokens; an account key signs **user** tokens; every request is
+signed by the subject's own key over a timestamp. The server verifies the
+chain against the pinned operator key, checks the account token against a
+revocation allowlist, and hands the tenant (and user) identity to the
+handler. Delegation is real: revoking one account cuts off everything under
+it, and an account can never grant more than it holds.
 
 Key types map to nkeys directly: operator `SO...`/`O...`, account
 `SA...`/`A...`, user `SU...`/`U...`. Tokens are valiss's own typed claims in
