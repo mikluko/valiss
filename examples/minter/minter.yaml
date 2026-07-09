@@ -1,19 +1,19 @@
-# Token manifest for `valiss creds`. Public data only, safe to commit.
+# Token manifest for `minter creds`. Public data only, safe to commit.
 #
-# Copy to valiss.yaml (or pass -f FILE) and replace the keys with your own:
+# Copy to minter.yaml (or pass -f FILE) and replace the keys with your own:
 #
-#   valiss keygen operator   # public key goes in `operator` below
-#   valiss keygen account    # public key goes in an account entry
-#   valiss keygen user       # public key goes in a user entry
+#   minter keygen operator   # public key goes in `operator` below
+#   minter keygen account    # public key goes in an account entry
+#   minter keygen user       # public key goes in a user entry
 #
-# Seeds are never stored. `valiss creds` resolves every signing seed from a
+# Seeds are never stored. `minter creds` resolves every signing seed from a
 # VALISS_SEED_<PUBKEY> environment variable and fails when one is missing:
 #
 #   export VALISS_SEED_ODPRLS...=SOAIRX...   # operator seed, signs account tokens
 #   export VALISS_SEED_AC4BYR...=SAAKP6...   # account seed, signs its users' tokens
-#   valiss creds acme          > acme.creds        # account-level creds
-#   valiss creds acme/alice    > alice.creds       # user-level creds
-#   valiss creds -bundle acme/alice > alice.creds  # bundle: + account token
+#   minter creds acme          > acme.creds        # account-level creds
+#   minter creds acme/alice    > alice.creds       # user-level creds
+#   minter creds -bundle acme/alice > alice.creds  # bundle: + account token
 #
 # The creds go to stdout; metadata goes to stderr as YAML, including the
 # account token jti the server-side allowlist must accept.

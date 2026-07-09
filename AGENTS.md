@@ -13,7 +13,7 @@ go build ./...                       # build everything
 go test ./...                       # full test suite
 go test . -run TestVerifyRequest    # single test in the root package (testify throughout)
 go vet ./...
-go run ./examples/cli keygen operator  # the example CLI
+go run ./examples/minter keygen operator  # the example CLI
 go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpauth)
 ```
 
@@ -38,7 +38,7 @@ Layout:
 - root — token issue/verify (`Issue`/`IssueUser`, `VerifyAccount`/`VerifyUser`/`Decode`), `SignRequest`/`VerifySignature`, `Allowlist`, `Verifier`, extension plumbing, `TenantFromContext`. `VerifyAccount`/`VerifyUser` deliberately do NOT check expiry or allowlist; `Verifier` layers those so callers get precise errors.
 - `creds` — client creds file (`Creds`: optional account token + optional user token + optional seed; at least one token), nsc-creds-style markers. A *bundle* is user creds that also embed the account token; bearer creds have no seed.
 - `contrib/httpauth`, `contrib/grpcauth` — transport adapters over `valiss.Verifier`: header extraction, error mapping (401/403, Unauthenticated/PermissionDenied), extension enforcement, client-side attachment, all constructed from a `creds.Creds`. Wire headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`, `valiss-signature` (`valiss.Header*` constants).
-- `examples/cli` (+ `examples/cli/manifest`) — the manifest-driven minting tool, an example rather than a product. Deterministic manifest: one operator, nested accounts/users by `name`, absolute RFC3339 `expires`/`not_before`, seeds only from `VALISS_SEED_<PUBKEY>` env vars. Creds → stdout, metadata (allowlist jti) → stderr; `-bundle` embeds a fresh account token.
+- `examples/minter` — the manifest-driven minting tool (single-file, manifest types included), an example rather than a product. Deterministic manifest (`minter.yaml`): one operator, nested accounts/users by `name`, absolute RFC3339 `expires`/`not_before`, seeds only from `VALISS_SEED_<PUBKEY>` env vars. Creds → stdout, metadata (allowlist jti) → stderr; `-bundle` embeds a fresh account token.
 
 ## Conventions
 

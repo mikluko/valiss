@@ -1,14 +1,14 @@
-// Command valiss issues tenant credentials for gRPC and HTTP services
-// using the operator/account/user nkey model (NATS style). It is stateless:
-// key pairs are printed once at generation and never stored; signing seeds
-// are supplied via VALISS_SEED_<PUBKEY> environment variables.
+// Command minter issues valiss tenant credentials for gRPC and HTTP
+// services using the operator/account/user nkey model (NATS style). It is
+// stateless: key pairs are printed once at generation and never stored;
+// signing seeds are supplied via VALISS_SEED_<PUBKEY> environment variables.
 //
-//	valiss keygen operator            # one-time: operator key pair (trust anchor)
-//	valiss keygen account             # per-tenant key pair
-//	valiss keygen user                # per-end-user key pair
-//	valiss creds ACCOUNT[/USER]       # mint credentials for one entity
+//	minter keygen operator            # one-time: operator key pair (trust anchor)
+//	minter keygen account             # per-tenant key pair
+//	minter keygen user                # per-end-user key pair
+//	minter creds ACCOUNT[/USER]       # mint credentials for one entity
 //
-// creds reads a token manifest (valiss.yaml in the working directory,
+// creds reads a token manifest (minter.yaml in the working directory,
 // override with -f) declaring the credential tree, resolves every required
 // seed from VALISS_SEED_<PUBKEY> environment variables (failing when one is
 // missing), and writes the credentials to stdout and their metadata --
@@ -20,6 +20,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,7 +34,6 @@ import (
 
 	"github.com/mikluko/valiss"
 	"github.com/mikluko/valiss/creds"
-	"github.com/mikluko/valiss/examples/cli/manifest"
 )
 
 func main() {
@@ -48,7 +48,7 @@ func main() {
 	case "creds":
 		err = cmdCreds(os.Stdout, os.Stderr, os.Args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "valiss: unknown command %q\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "minter: unknown command %q\n\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
@@ -58,7 +58,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `usage: valiss <command> [flags]
+	fmt.Fprint(os.Stderr, `usage: minter <command> [flags]
 
 commands:
   keygen operator    generate the operator key pair (server trust anchor)
@@ -66,7 +66,7 @@ commands:
   keygen user        generate a user key pair
   creds ACCOUNT[/USER]  mint credentials for a manifest entry:
                      creds to stdout, metadata (allowlist jti) to stderr
-      -f FILE          token manifest (default valiss.yaml)
+      -f FILE          token manifest (default minter.yaml)
       -bundle          also embed a fresh account token in user creds
 
 Seeds are never stored: keygen prints them once, preserve them securely.
@@ -91,10 +91,10 @@ func cmdKeygen(out, msg io.Writer, args []string) error {
 		hint = "Public key is the server trust anchor. The seed signs account tokens:\npreserve it as VALISS_SEED_<public>, it cannot be recovered and is never stored."
 	case "account":
 		kp, err = nkeys.CreateAccount()
-		hint = "Public key goes in valiss.yaml. The seed signs requests as this tenant\nand its users' tokens: preserve it as VALISS_SEED_<public>."
+		hint = "Public key goes in minter.yaml. The seed signs requests as this tenant\nand its users' tokens: preserve it as VALISS_SEED_<public>."
 	case "user":
 		kp, err = nkeys.CreateUser()
-		hint = "Public key goes in a user entry in valiss.yaml. The seed signs requests\nas this user: hand it to the user securely, it is never stored."
+		hint = "Public key goes in a user entry in minter.yaml. The seed signs requests\nas this user: hand it to the user securely, it is never stored."
 	default:
 		return fmt.Errorf("unknown key type %q; use operator, account, or user", args[0])
 	}
@@ -144,7 +144,7 @@ type credsMeta struct {
 
 func cmdCreds(out, msg io.Writer, args []string) error {
 	fs := flag.NewFlagSet("creds", flag.ContinueOnError)
-	cfgPath := fs.String("f", "valiss.yaml", "token manifest file")
+	cfgPath := fs.String("f", "minter.yaml", "token manifest file")
 	asBundle := fs.Bool("bundle", false, "embed a freshly minted account token in user creds, for servers that do not resolve account tokens themselves")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -160,7 +160,7 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 		return errors.New("-bundle applies only to user credentials")
 	}
 
-	m, err := manifest.Load(*cfgPath)
+	m, err := loadManifest(*cfgPath)
 	if err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func checkNotExpired(name string, expires time.Time) error {
 
 // mintAccount writes account-level creds: the operator-signed account
 // token plus the account seed.
-func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account) error {
+func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct Account) error {
 	if err := checkNotExpired(acct.Name, acct.Expires); err != nil {
 		return err
 	}
@@ -237,7 +237,7 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 // user seed (absent for bearer users). With a non-nil operator (-bundle)
 // the creds also embed a freshly signed account token; without it the
 // server resolves the account token by other means.
-func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account, userName string) error {
+func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName string) error {
 	user, ok := acct.User(userName)
 	if !ok {
 		return fmt.Errorf("user %q not found under account %q", userName, acct.Name)
@@ -367,6 +367,166 @@ func writeMeta(w io.Writer, meta credsMeta) error {
 }
 
 func fatal(err error) {
-	fmt.Fprintf(os.Stderr, "valiss: %s\n", err)
+	fmt.Fprintf(os.Stderr, "minter: %s\n", err)
 	os.Exit(1)
+}
+
+// The minter.yaml token manifest: the public, non-secret description of the
+// credential tree (operator public key, accounts with their public keys and
+// scopes, users under each account). Seeds never appear here; the creds
+// command resolves them from VALISS_SEED_<PUBKEY> environment variables.
+//
+// The manifest is deterministic: validity boundaries are absolute RFC3339
+// timestamps (expires, not_before), so re-minting against the same manifest
+// yields the same validity window. An entry without expires never expires,
+// matching nsc's default.
+
+// User describes one end user under an account. A user entry either binds a
+// key (present in the manifest or generated at mint time) or is an explicit
+// bearer entry whose token-only credential cannot sign requests.
+type User struct {
+	// Name identifies the user within its account (the JWT name field; the
+	// sub claim carries the key).
+	Name string `yaml:"name"`
+	// Key is the user's nkey public key; its seed must then be supplied via
+	// VALISS_SEED_<key>. Absent means a fresh key pair is generated at mint
+	// time. Mutually exclusive with Bearer.
+	Key string `yaml:"key,omitempty"`
+	// Bearer marks a token-only user: the server accepts its token without
+	// per-request signatures and the creds carry no seed. A user without a
+	// key gets a throwaway pair at mint time.
+	Bearer bool `yaml:"bearer,omitempty"`
+	// Scopes granted to the user; each must be covered by the account's
+	// scopes.
+	Scopes []string `yaml:"scopes,omitempty"`
+	// Expires is the token expiry (the JWT exp claim), absolute RFC3339.
+	// Absent means the token never expires.
+	Expires time.Time `yaml:"expires,omitempty"`
+	// NotBefore is the token activation time (the JWT nbf claim), absolute
+	// RFC3339. Absent means immediately valid.
+	NotBefore time.Time `yaml:"not_before,omitempty"`
+}
+
+// Account describes one tenant under an operator.
+type Account struct {
+	// Name is the tenant id the token binds (the JWT name field; the sub
+	// claim carries the key); it segments all stored data.
+	Name string `yaml:"name"`
+	// Key is the account's nkey public key; its seed must then be supplied
+	// via VALISS_SEED_<key>. Absent means a fresh key pair is generated at
+	// mint time (such an account cannot have users minted against the
+	// manifest, as the signing seed has no stable name).
+	Key string `yaml:"key,omitempty"`
+	// Scopes granted to the account, e.g. "call:/pkg.Svc/*".
+	Scopes []string `yaml:"scopes,omitempty"`
+	// Expires is the token expiry (the JWT exp claim), absolute RFC3339.
+	// Absent means the token never expires.
+	Expires time.Time `yaml:"expires,omitempty"`
+	// NotBefore is the token activation time (the JWT nbf claim), absolute
+	// RFC3339. Absent means immediately valid.
+	NotBefore time.Time `yaml:"not_before,omitempty"`
+	// Users are the end users the account delegates access to.
+	Users []User `yaml:"users,omitempty"`
+}
+
+// User returns the user entry with the given name.
+func (a Account) User(name string) (User, bool) {
+	for _, u := range a.Users {
+		if u.Name == name {
+			return u, true
+		}
+	}
+	return User{}, false
+}
+
+// Manifest is the minter.yaml document: one trust domain, an operator public
+// key and the accounts it issues.
+type Manifest struct {
+	// Operator is the operator's nkey public key: the trust anchor servers
+	// pin and the name of the VALISS_SEED_ variable holding the signing seed.
+	Operator string    `yaml:"operator"`
+	Accounts []Account `yaml:"accounts"`
+}
+
+// FindAccount resolves an account name.
+func (m *Manifest) FindAccount(name string) (Account, error) {
+	for _, a := range m.Accounts {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return Account{}, fmt.Errorf("account %q not found in the manifest", name)
+}
+
+// loadManifest reads and validates a token manifest.
+func loadManifest(path string) (*Manifest, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read manifest: %w", err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	var m Manifest
+	if err := dec.Decode(&m); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if !nkeys.IsValidPublicOperatorKey(m.Operator) {
+		return nil, fmt.Errorf("%s: operator is not a valid operator public key (expected an O... nkey)", path)
+	}
+	if len(m.Accounts) == 0 {
+		return nil, fmt.Errorf("%s: no accounts defined", path)
+	}
+	seen := make(map[string]bool, len(m.Accounts))
+	for i, a := range m.Accounts {
+		if a.Name == "" {
+			return nil, fmt.Errorf("%s: accounts[%d]: name is required", path, i)
+		}
+		if seen[a.Name] {
+			return nil, fmt.Errorf("%s: duplicate account name %q", path, a.Name)
+		}
+		seen[a.Name] = true
+		if err := validateAccount(a); err != nil {
+			return nil, fmt.Errorf("%s: account %q: %w", path, a.Name, err)
+		}
+	}
+	return &m, nil
+}
+
+func validateAccount(a Account) error {
+	if a.Key != "" && !nkeys.IsValidPublicAccountKey(a.Key) {
+		return fmt.Errorf("key is not a valid account public key (expected an A... nkey)")
+	}
+	if err := validateWindow(a.Expires, a.NotBefore); err != nil {
+		return err
+	}
+	seen := make(map[string]bool, len(a.Users))
+	for i, u := range a.Users {
+		if u.Name == "" {
+			return fmt.Errorf("users[%d]: name is required", i)
+		}
+		if seen[u.Name] {
+			return fmt.Errorf("duplicate user name %q", u.Name)
+		}
+		seen[u.Name] = true
+		if u.Key != "" && !nkeys.IsValidPublicUserKey(u.Key) {
+			return fmt.Errorf("user %q: key is not a valid user public key (expected a U... nkey)", u.Name)
+		}
+		if err := validateWindow(u.Expires, u.NotBefore); err != nil {
+			return fmt.Errorf("user %q: %w", u.Name, err)
+		}
+		for _, s := range u.Scopes {
+			if !valiss.Covered(a.Scopes, s) {
+				return fmt.Errorf("user %q: scope %q is not covered by the account scopes", u.Name, s)
+			}
+		}
+	}
+	return nil
+}
+
+// validateWindow rejects a validity window that is empty on its face.
+func validateWindow(expires, notBefore time.Time) error {
+	if !expires.IsZero() && !notBefore.IsZero() && !expires.After(notBefore) {
+		return fmt.Errorf("expires %s is not after not_before %s", expires.Format(time.RFC3339), notBefore.Format(time.RFC3339))
+	}
+	return nil
 }

@@ -86,7 +86,7 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
 - `contrib/httpauth` — net/http middleware, client transport, HTTP extension
 - `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
 - `examples/` — runnable end-to-end demos, including the manifest-driven
-  `examples/cli` credential minting tool
+  `examples/minter` credential minting tool
 
 ## Library
 
@@ -133,22 +133,22 @@ Servers that hold account tokens in configuration (NATS-resolver style)
 accept user-token-only requests via
 `valiss.WithAccountTokenResolver(valiss.StaticAccountTokens(...))`.
 
-## Example CLI
+## Minter
 
-`examples/cli` is a manifest-driven credential minting tool (and a worked
-example of the issuance API). Stateless: key pairs print once and are never
-stored; signing seeds come from `VALISS_SEED_<PUBKEY>` environment variables.
+[`examples/minter`](examples/minter) is a manifest-driven credential minting
+tool (and a worked example of the issuance API). Stateless: key pairs print
+once and are never stored; signing seeds come from `VALISS_SEED_<PUBKEY>`
+environment variables.
 
 ```
-go run ./examples/cli keygen operator     # public key = server trust anchor
-go run ./examples/cli keygen account      # per-tenant key pair
-go run ./examples/cli keygen user         # per-end-user key pair
-go run ./examples/cli creds ACCOUNT[/USER]  # mint creds for a manifest entry
+go run ./examples/minter keygen operator     # public key = server trust anchor
+go run ./examples/minter keygen account      # per-tenant key pair
+go run ./examples/minter keygen user         # per-end-user key pair
+go run ./examples/minter creds ACCOUNT[/USER]  # mint creds for a manifest entry
 ```
 
-`creds` reads `valiss.yaml` (see the annotated
-[`examples/cli/valiss.example.yaml`](examples/cli/valiss.example.yaml)),
-resolves seeds from the environment, and writes the creds to stdout with
-metadata — including the allowlist jti — on stderr. User creds carry only
-the user token by default; `-bundle` embeds a fresh account token for
-servers without a resolver.
+`creds` reads `minter.yaml` (annotated example in the directory), resolves
+seeds from the environment, and writes the creds to stdout with metadata —
+including the allowlist jti — on stderr. User creds carry only the user
+token by default; `-bundle` embeds a fresh account token for servers without
+a resolver. See [`examples/minter/README.md`](examples/minter/README.md).
