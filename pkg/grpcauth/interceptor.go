@@ -58,16 +58,16 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing request metadata")
 	}
-	cred := token.Credential{
+	req := token.Request{
 		AccountToken: first(md, token.HeaderAccountToken),
 		UserToken:    first(md, token.HeaderUserToken),
 		Timestamp:    first(md, token.HeaderTimestamp),
 		Signature:    first(md, token.HeaderSignature),
 	}
-	if cred.AccountToken == "" && cred.UserToken == "" {
+	if req.AccountToken == "" && req.UserToken == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")
 	}
-	claims, err := a.verifier.VerifyCredential(cred)
+	claims, err := a.verifier.VerifyRequest(req)
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}

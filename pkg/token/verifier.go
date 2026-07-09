@@ -21,8 +21,8 @@ const (
 // short TTLs.
 const ScopeBearer = "bearer"
 
-// Credential is the per-request material a transport extracts from headers.
-type Credential struct {
+// Request is the per-request material a transport extracts from headers.
+type Request struct {
 	// AccountToken is the operator-signed account token.
 	AccountToken string
 	// UserToken is the account-signed user token on chain credentials; empty
@@ -38,7 +38,7 @@ type Credential struct {
 // runs after the token chain is verified and the effective claims are
 // assembled, and before the request signature check. A non-nil error rejects
 // the request as unauthenticated.
-type ClaimsValidator func(cred Credential, claims *Claims) error
+type ClaimsValidator func(req Request, claims *Claims) error
 
 // AccountTokenResolver supplies the operator-signed account token for an
 // account public key, serving requests that carry only a user token (the
@@ -126,7 +126,7 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 	return v
 }
 
-// VerifyCredential authenticates a request credential and returns the
+// VerifyRequest authenticates a request credential and returns the
 // effective claims. Any error means the request must be rejected as
 // unauthenticated.
 //
@@ -139,15 +139,15 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 //
 // An empty timestamp and signature is a bearer request, accepted only when
 // the effective token grants ScopeBearer.
-func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
-	if cred.AccountToken == "" {
-		if cred.UserToken == "" {
+func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
+	if req.AccountToken == "" {
+		if req.UserToken == "" {
 			return nil, errors.New("valiss: missing credentials")
 		}
 		if v.resolver == nil {
 			return nil, errors.New("valiss: request carries no account token and the server has no account token resolver")
 		}
-		accountPubKey, err := IssuerOf(cred.UserToken)
+		accountPubKey, err := IssuerOf(req.UserToken)
 		if err != nil {
 			return nil, err
 		}
@@ -155,9 +155,9 @@ func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
 		if err != nil {
 			return nil, err
 		}
-		cred.AccountToken = tok
+		req.AccountToken = tok
 	}
-	claims, err := Verify(cred.AccountToken, v.operatorPubKey)
+	claims, err := Verify(req.AccountToken, v.operatorPubKey)
 	if err != nil {
 		return nil, err
 	}
@@ -168,8 +168,8 @@ func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
 	if !v.allowlist.Allowed(claims.ID) {
 		return nil, errors.New("valiss: account token not recognized")
 	}
-	if cred.UserToken != "" {
-		user, err := Verify(cred.UserToken, claims.PubKey)
+	if req.UserToken != "" {
+		user, err := Verify(req.UserToken, claims.PubKey)
 		if err != nil {
 			return nil, err
 		}
@@ -193,11 +193,11 @@ func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
 		}
 	}
 	for _, validate := range v.validators {
-		if err := validate(cred, claims); err != nil {
+		if err := validate(req, claims); err != nil {
 			return nil, err
 		}
 	}
-	if cred.Timestamp == "" && cred.Signature == "" {
+	if req.Timestamp == "" && req.Signature == "" {
 		if !claims.HasScope(ScopeBearer) {
 			return nil, errors.New("valiss: request signature required: token does not grant the bearer scope")
 		}
@@ -206,7 +206,7 @@ func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
 	if claims.PubKey == "" {
 		return nil, errors.New("valiss: request signature present but token binds no key")
 	}
-	if err := VerifyRequest(claims.PubKey, cred.Timestamp, cred.Signature, now, v.skew); err != nil {
+	if err := VerifySignature(claims.PubKey, req.Timestamp, req.Signature, now, v.skew); err != nil {
 		return nil, err
 	}
 	return claims, nil

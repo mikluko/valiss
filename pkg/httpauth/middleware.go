@@ -51,17 +51,17 @@ func NewMiddleware(verifier *token.Verifier, opts ...Option) func(http.Handler) 
 }
 
 func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	cred := token.Credential{
+	req := token.Request{
 		AccountToken: r.Header.Get(token.HeaderAccountToken),
 		UserToken:    r.Header.Get(token.HeaderUserToken),
 		Timestamp:    r.Header.Get(token.HeaderTimestamp),
 		Signature:    r.Header.Get(token.HeaderSignature),
 	}
-	if cred.AccountToken == "" && cred.UserToken == "" {
+	if req.AccountToken == "" && req.UserToken == "" {
 		http.Error(w, "missing credentials", http.StatusUnauthorized)
 		return
 	}
-	claims, err := m.verifier.VerifyCredential(cred)
+	claims, err := m.verifier.VerifyRequest(req)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return

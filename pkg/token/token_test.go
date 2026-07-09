@@ -119,22 +119,22 @@ func TestSignVerifyRequest(t *testing.T) {
 
 	ts, sig, err := SignRequest(tenant, now)
 	require.NoError(t, err)
-	assert.NoError(t, VerifyRequest(tenantPub, ts, sig, now, DefaultSkew))
+	assert.NoError(t, VerifySignature(tenantPub, ts, sig, now, DefaultSkew))
 
 	t.Run("outside skew window", func(t *testing.T) {
-		err := VerifyRequest(tenantPub, ts, sig, now.Add(5*time.Minute), DefaultSkew)
+		err := VerifySignature(tenantPub, ts, sig, now.Add(5*time.Minute), DefaultSkew)
 		assert.ErrorContains(t, err, "skew window")
 	})
 
 	t.Run("wrong key", func(t *testing.T) {
 		_, otherPub := tenantKeys(t)
-		err := VerifyRequest(otherPub, ts, sig, now, DefaultSkew)
+		err := VerifySignature(otherPub, ts, sig, now, DefaultSkew)
 		assert.ErrorContains(t, err, "signature verification failed")
 	})
 
 	t.Run("tampered timestamp breaks signature", func(t *testing.T) {
 		other := now.Add(30 * time.Second)
-		err := VerifyRequest(tenantPub, other.UTC().Format(time.RFC3339Nano), sig, other, DefaultSkew)
+		err := VerifySignature(tenantPub, other.UTC().Format(time.RFC3339Nano), sig, other, DefaultSkew)
 		assert.ErrorContains(t, err, "signature verification failed")
 	})
 }

@@ -28,9 +28,9 @@ func SignRequest(tenant nkeys.KeyPair, now time.Time) (timestamp, signature stri
 	return now.UTC().Format(time.RFC3339Nano), base64.StdEncoding.EncodeToString(sig), nil
 }
 
-// VerifyRequest checks a request signature against the tenant public key and
+// VerifySignature checks a request signature against the tenant public key and
 // bounds the timestamp to a symmetric skew window around now.
-func VerifyRequest(tenantPubKey, timestamp, signature string, now time.Time, skew time.Duration) error {
+func VerifySignature(tenantPubKey, timestamp, signature string, now time.Time, skew time.Duration) error {
 	ts, err := time.Parse(time.RFC3339Nano, timestamp)
 	if err != nil {
 		return fmt.Errorf("valiss: bad request timestamp: %w", err)

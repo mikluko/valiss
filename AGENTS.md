@@ -21,7 +21,7 @@ go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpau
 
 Three-level trust chain modeled on NATS, all rooted in Ed25519 nkeys: an **operator** (`SO...`/`O...`) signs **account** (tenant, `SA...`/`A...`) tokens; an account may sign **user** (`SU...`/`U...`) tokens delegating a subset of its scopes. Servers pin only the operator public key.
 
-Per-request verification (`token.Verifier.VerifyCredential`, takes a `token.Credential`):
+Per-request verification (`token.Verifier.VerifyRequest`, takes a `token.Request` of the four header values):
 
 1. **Account token**: operator-signed JWT embedding the account's public key (custom claims `subject_key`, `scopes`), checked against the pinned operator key and expiry.
 2. **Allowlist**: the *account* token's jti must be in a server-side `token.Allowlist`; removal revokes before expiry. User tokens are not allowlisted — revocation is account-wide, user-level revocation relies on short TTLs.
