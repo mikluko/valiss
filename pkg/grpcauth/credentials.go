@@ -8,35 +8,38 @@ import (
 	"github.com/nats-io/nkeys"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/mikluko/valiss/pkg/creds"
 	"github.com/mikluko/valiss/pkg/token"
 )
 
-// Credentials is a grpc.PerRPCCredentials that attaches the tenant token and
-// a fresh per-call signature. Use grpc.WithPerRPCCredentials on the client.
+// Credentials is a grpc.PerRPCCredentials that attaches the credential
+// bundle's tokens and, when the bundle holds a seed, a fresh per-call
+// signature. Bundles without a seed are bearer credentials: the server
+// accepts them only when the effective token grants token.ScopeBearer. Use
+// grpc.WithPerRPCCredentials on the client.
 type Credentials struct {
-	token  string
-	tenant nkeys.KeyPair
-	now    func() time.Time
+	token     string
+	userToken string
+	subject   nkeys.KeyPair
+	now       func() time.Time
 	// requireTLS mirrors the transport: gRPC refuses to send per-RPC
 	// credentials over an insecure connection unless this is false.
 	requireTLS bool
 }
 
-// NewCredentials builds client credentials from the issuer-signed token and
-// the tenant seed that matches the token's bound key.
-func NewCredentials(tok string, tenantSeed []byte) (*Credentials, error) {
-	tenant, err := nkeys.FromSeed(tenantSeed)
-	if err != nil {
-		return nil, fmt.Errorf("valiss: tenant seed: %w", err)
+// NewCredentials builds client credentials from a creds bundle: the tenant
+// token, the optional user token, and the seed matching the effective
+// token's bound key (nil for bearer bundles).
+func NewCredentials(b creds.Bundle) (*Credentials, error) {
+	c := &Credentials{token: b.Token, userToken: b.UserToken, now: time.Now, requireTLS: true}
+	if len(b.Seed) > 0 {
+		subject, err := nkeys.FromSeed(b.Seed)
+		if err != nil {
+			return nil, fmt.Errorf("valiss: creds seed: %w", err)
+		}
+		c.subject = subject
 	}
-	return &Credentials{token: tok, tenant: tenant, now: time.Now, requireTLS: true}, nil
-}
-
-// NewBearerCredentials builds client credentials that attach the token alone,
-// without per-call signatures; no seed is needed. The server accepts such
-// requests only when the token grants token.ScopeBearer.
-func NewBearerCredentials(tok string) *Credentials {
-	return &Credentials{token: tok, now: time.Now, requireTLS: true}
+	return c, nil
 }
 
 // AllowInsecure permits sending the credential over a non-TLS connection,
@@ -47,18 +50,19 @@ func (c *Credentials) AllowInsecure() *Credentials {
 }
 
 func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
-	if c.tenant == nil {
-		return map[string]string{token.HeaderToken: c.token}, nil
+	md := map[string]string{token.HeaderToken: c.token}
+	if c.userToken != "" {
+		md[token.HeaderUserToken] = c.userToken
 	}
-	timestamp, signature, err := token.SignRequest(c.tenant, c.now())
-	if err != nil {
-		return nil, err
+	if c.subject != nil {
+		timestamp, signature, err := token.SignRequest(c.subject, c.now())
+		if err != nil {
+			return nil, err
+		}
+		md[token.HeaderTimestamp] = timestamp
+		md[token.HeaderSignature] = signature
 	}
-	return map[string]string{
-		token.HeaderToken:     c.token,
-		token.HeaderTimestamp: timestamp,
-		token.HeaderSignature: signature,
-	}, nil
+	return md, nil
 }
 
 func (c *Credentials) RequireTransportSecurity() bool { return c.requireTLS }

@@ -1,30 +1,42 @@
 # valiss
 
 **VAL**idator-**ISS**uer: tenant authentication for gRPC and HTTP services,
-modeled on NATS operator/user credentials.
+modeled on NATS operator/account/user credentials.
 
-- An **issuer** holds an Ed25519 nkey; its public key is the trust anchor.
-- The issuer signs each **tenant** a scoped, time-limited JWT that binds the
-  tenant's own nkey public key. Issued token ids go in a server-side allowlist.
-- The tenant **signs every request** with its nkey over a timestamp. The server
-  verifies the token against the issuer key, the signature against the bound
-  key within a skew window, and the token id against the allowlist, then hands
-  the tenant identity to the handler for data segmentation.
+- An **operator** holds an Ed25519 nkey; its public key is the trust anchor.
+- The operator signs each **account** (tenant) a scoped, time-limited JWT
+  that binds the account's own nkey public key. Issued token ids go in a
+  server-side allowlist.
+- An account may delegate: it signs **user** tokens with its account seed,
+  granting end users a subset of its scopes. Servers verify the chain up to
+  the pinned operator key; nothing else needs distribution.
+- The client **signs every request** with its nkey over a timestamp. The
+  server verifies the token (chain) against the operator key, the signature
+  against the bound key within a skew window, and the account token id
+  against the allowlist, then hands the tenant (and user) identity to the
+  handler for data segmentation.
 
-(In nkeys terms the issuer key is an operator-type key: `SO...` seed, `O...`
-public key.)
+Key types map to nkeys directly: operator `SO...`/`O...`, account
+`SA...`/`A...`, user `SU...`/`U...`.
 
 Per-method authorization: grant `call:<fullMethod>` scopes (prefix wildcards
 like `call:/pkg.Service/*` and `call:*` supported) and enable
-`WithMethodScope()` on the authenticator.
+`WithMethodScope()` on the authenticator. User scopes are clamped to the
+account's grants at verification, so a tenant can never delegate more than
+it holds.
+
+Bearer credentials: a token whose scopes include `bearer` authenticates
+without a per-request signature (token-only, replayable). Meant for user
+entries marked `bearer: true`, where handing out a seed is impractical; pair
+with TLS and short TTLs.
 
 ## Layout
 
 `main.go` at the root is the CLI; the consumable library lives under `pkg/`.
 
-- `pkg/token` — token issue/verify, request sign/verify, allowlist, the
-  credential `Verifier`, and `TenantFromContext`
-- `pkg/creds` — client credential bundle file (token + seed)
+- `pkg/token` — token issue/verify (account and user level), request
+  sign/verify, allowlist, the credential `Verifier`, and `TenantFromContext`
+- `pkg/creds` — client credential bundle file (tokens + seed)
 - `pkg/grpcauth` — gRPC server interceptors and client per-RPC credentials
 - `pkg/httpauth` — net/http server middleware and client transport
 - `internal/manifest` — the valiss.yaml token manifest (CLI-only)
@@ -35,36 +47,37 @@ like `call:/pkg.Service/*` and `call:*` supported) and enable
 Server (gRPC):
 
 ```go
-verifier := token.NewVerifier(issuerPubKey, allowlist)
+verifier := token.NewVerifier(operatorPubKey, allowlist)
 auth := grpcauth.NewAuthenticator(verifier, grpcauth.WithMethodScope())
 srv := grpc.NewServer(
     grpc.UnaryInterceptor(auth.UnaryInterceptor()),
     grpc.StreamInterceptor(auth.StreamInterceptor()),
 )
 // in a handler:
-claims, _ := token.TenantFromContext(ctx) // claims.TenantID segments data
+claims, _ := token.TenantFromContext(ctx) // claims.TenantID segments data,
+                                          // claims.UserID names the end user
 ```
 
 Client (gRPC):
 
 ```go
-tok, seed, _ := creds.Load("acme.creds")
-c, _ := grpcauth.NewCredentials(tok, seed)
+bundle, _ := creds.Load("alice.creds")
+c, _ := grpcauth.NewCredentials(bundle)
 conn, _ := grpc.NewClient(addr, grpc.WithPerRPCCredentials(c), ...)
 ```
 
 Server (HTTP):
 
 ```go
-mw := httpauth.NewMiddleware(token.NewVerifier(issuerPubKey, allowlist))
+mw := httpauth.NewMiddleware(token.NewVerifier(operatorPubKey, allowlist))
 srv := &http.Server{Handler: mw(mux)}
 ```
 
 Client (HTTP):
 
 ```go
-tok, seed, _ := creds.Load("acme.creds")
-transport, _ := httpauth.NewTransport(tok, seed, nil)
+bundle, _ := creds.Load("alice.creds")
+transport, _ := httpauth.NewTransport(bundle, nil)
 client := &http.Client{Transport: transport}
 ```
 
@@ -72,38 +85,59 @@ Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`.
 
 ## CLI
 
-Stateless: seeds are printed once at generation and never stored; preserve
-them securely (a secrets manager, not this repo).
+Stateless: key pairs are printed once at generation and never stored;
+signing seeds are supplied via `VALISS_SEED_<PUBKEY>` environment variables
+(a secrets manager that injects env fits naturally).
 
 ```
-valiss keygen issuer       # one-time: public key = server trust anchor
-valiss keygen tenant       # per-tenant: public key goes in valiss.yaml
-valiss issue               # mint a token per manifest entry, YAML to stdout
+valiss keygen operator     # one-time: public key = server trust anchor
+valiss keygen account      # per-tenant: public key goes in valiss.yaml
+valiss keygen user         # per-end-user: public key goes in a user entry
+valiss creds ACCOUNT[/USER]  # mint a credential bundle for one entity
 ```
 
-`issue` reads the token manifest (`valiss.yaml` in the working directory,
-override with `-f FILE`) and signs with the issuer seed from `-seed-file
-FILE` or `$VALISS_ISSUER_SEED`:
+`creds` reads the token manifest (`valiss.yaml` in the working directory,
+override with `-f FILE`), resolves the required seeds from the environment
+(failing with the exact variable name when one is missing), and writes the
+credential bundle to stdout and its metadata to stderr:
+
+```console
+$ export VALISS_SEED_OD25ZJ...=SOAI2X...   # operator seed
+$ export VALISS_SEED_AC4JQU...=SAAK7G...   # account seed
+$ valiss creds acme/alice > alice.creds
+account:
+  id: acme
+  key: AC4JQU...
+  jti: FVIENQPFQY...        # add to the server allowlist
+  expires: 2026-08-08T09:00:00Z
+user:
+  id: alice
+  key: UDKED...
+  jti: NQLQXOWTGN...
+  expires: 2026-07-09T13:00:00Z
+```
+
+Manifest entries without a `key` get a fresh pair generated per invocation;
+the seed ships only inside the bundle. Minting a user credential embeds a
+freshly signed account token, so every mint yields a new account jti for the
+allowlist.
+
+An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
 
 ```yaml
 # valiss.yaml — public data only, safe to commit
-issuer: ODZ6U...        # issuer public key; issue refuses non-matching seeds
-tokens:
-  - id: acme
-    key: ABPZ7...        # tenant public key from `valiss keygen tenant`
-    scopes: ["call:/pkg.Svc/*"]
-    ttl: 720h            # optional, defaults to 720h
-```
-
-An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml).
-
-Output carries everything both sides need: the token for the client, the jti
-for the server-side allowlist:
-
-```yaml
-tokens:
-  - id: acme
-    jti: FVIENQPFQY...   # add to the server allowlist
-    expires: 2026-08-08T09:00:00Z
-    token: eyJ0eXAiOiJKV1QiLCJhbGciOiJlZDI1NTE5LW5rZXkifQ...
+- operator: ODZ6U...        # trust anchor; seed from VALISS_SEED_<this key>
+  accounts:
+    - id: acme
+      key: ABPZ7...          # account public key from `valiss keygen account`
+      scopes: ["call:/pkg.Svc/*"]
+      ttl: 720h              # optional, defaults to 720h
+      users:
+        - id: alice
+          key: UDGH3...      # user public key; seed stays with the user
+          scopes: ["call:/pkg.Svc/Get"]
+          ttl: 1h            # optional, defaults to 1h
+        - id: carol
+          bearer: true       # keyless token-only credential
+          scopes: ["call:/pkg.Svc/List"]
 ```

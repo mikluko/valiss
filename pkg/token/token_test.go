@@ -58,7 +58,7 @@ func TestIssueVerify(t *testing.T) {
 	t.Run("non-operator-type signer rejected", func(t *testing.T) {
 		account, _ := tenantKeys(t)
 		_, err := Issue(account, "acme", tenantPub, nil, time.Hour)
-		assert.ErrorContains(t, err, "not an operator-type nkey")
+		assert.ErrorContains(t, err, "operator-type nkey")
 	})
 
 	t.Run("expired", func(t *testing.T) {
@@ -68,6 +68,49 @@ func TestIssueVerify(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, c.Expired(c.ExpiresAt.Add(time.Minute), 0))
 	})
+}
+
+func userKeys(t *testing.T) (nkeys.KeyPair, string) {
+	t.Helper()
+	up, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	pub, err := up.PublicKey()
+	require.NoError(t, err)
+	return up, pub
+}
+
+func TestIssueUser(t *testing.T) {
+	account, accountPub := tenantKeys(t)
+	_, userPub := userKeys(t)
+
+	tok, err := IssueUser(account, "alice", userPub, []string{"read"}, time.Hour)
+	require.NoError(t, err)
+	claims, err := Verify(tok, accountPub)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", claims.TenantID)
+	assert.Equal(t, userPub, claims.PubKey)
+	assert.True(t, claims.HasScope("read"))
+
+	t.Run("non-account-type signer rejected", func(t *testing.T) {
+		op, _ := issuerKeys(t)
+		_, err := IssueUser(op, "alice", userPub, nil, time.Hour)
+		assert.ErrorContains(t, err, "account-type nkey")
+	})
+
+	t.Run("keyless without bearer scope rejected", func(t *testing.T) {
+		_, err := IssueUser(account, "carol", "", []string{"read"}, time.Hour)
+		assert.ErrorContains(t, err, "bearer")
+	})
+
+	t.Run("keyless bearer token verifies", func(t *testing.T) {
+		tok, err := IssueUser(account, "carol", "", []string{ScopeBearer, "read"}, time.Hour)
+		require.NoError(t, err)
+		claims, err := Verify(tok, accountPub)
+		require.NoError(t, err)
+		assert.Empty(t, claims.PubKey)
+		assert.True(t, claims.HasScope(ScopeBearer))
+	})
+
 }
 
 func TestSignVerifyRequest(t *testing.T) {

@@ -1,29 +1,64 @@
-# Token manifest for `valiss issue`. Public data only, safe to commit.
+# Token manifest for `valiss creds`. Public data only, safe to commit.
 #
 # Copy to valiss.yaml (or pass -f FILE) and replace the keys with your own:
 #
-#   valiss keygen issuer    # public key goes in `issuer` below; the seed
-#                              # signs tokens (-seed-file or $VALISS_ISSUER_SEED)
-#   valiss keygen tenant    # public key goes in a token entry; the tenant
-#                              # keeps the seed and signs requests with it
+#   valiss keygen operator   # public key goes in `operator` below
+#   valiss keygen account    # public key goes in an account entry
+#   valiss keygen user       # public key goes in a user entry
 #
-# The keys below are throwaway examples; issuing against them fails unless
+# Seeds are never stored. `valiss creds` resolves every signing seed from a
+# VALISS_SEED_<PUBKEY> environment variable and fails when one is missing:
+#
+#   export VALISS_SEED_ODPRLS...=SOAIRX...   # operator seed, signs account tokens
+#   export VALISS_SEED_AC4BYR...=SAAKP6...   # account seed, signs its users' tokens
+#   valiss creds acme          > acme.creds        # account-level bundle
+#   valiss creds acme/alice    > alice.creds       # user-level bundle
+#
+# The bundle goes to stdout; metadata goes to stderr as YAML, including the
+# account token jti the server-side allowlist must accept.
+#
+# Entries without a `key` get a fresh key pair generated per invocation; the
+# seed ships only inside the bundle. Entries with a `key` require the
+# matching VALISS_SEED_<key> at mint time.
+#
+# The keys below are throwaway examples; minting against them fails unless
 # you hold the matching seeds.
 
-# Issuer public key: the trust anchor servers pin. `issue` refuses seeds that
-# do not match it.
-issuer: OCA53ND5LYODEDNGW47SGVWMKUE6NOG4J5A5EQ43GO2EHCWK34CMTSHH
+# One block per operator (trust domain). The operator public key is the
+# trust anchor servers pin.
+- operator: ODPRLS7YYJKZTLCJFUO765BRAHYY5MTKNMAZIOFEL6WCDAVKQOBD25ZJ
+  accounts:
+    # One entry per tenant. The account key signs the tenant's requests and
+    # its users' tokens.
+    - id: acme                # tenant id; segments all stored data
+      key: AC4BYRVFUKRB7R4QEHSQFGV7R6HDIAMGR2C6GPAOUD3BANKQ4G44JQU4
+      scopes:                 # granted scopes; prefix wildcards supported
+        - call:/example.v1.WidgetService/*
+      ttl: 720h               # optional; defaults to 720h (30 days)
+      users:
+        # Users hold a subset of the account scopes; the server clamps them
+        # at verification too. User tokens default to a 1h ttl.
+        - id: alice
+          key: UDT3JMUJSPJR6KQOQ33JMFK44T4TTQWF4X35RFHI62WAWWQOXYSKEDH7
+          scopes:
+            - call:/example.v1.WidgetService/GetWidget
+          ttl: 1h
+        # No key: a fresh pair is generated on every `valiss creds acme/bob`,
+        # and the seed ships inside the bundle.
+        - id: bob
+          scopes:
+            - call:/example.v1.WidgetService/GetWidget
+        # Explicit bearer: keyless, token-only credential that cannot sign
+        # requests. Replayable until expiry; keep the ttl short.
+        - id: carol
+          bearer: true
+          scopes:
+            - call:/example.v1.WidgetService/ListWidgets
+          ttl: 1h
 
-tokens:
-  # One entry per token to mint. `valiss issue` prints the token (for the
-  # client) and its jti (for the server-side allowlist) per entry.
-  - id: acme                # tenant id; segments all stored data
-    key: ACJG374E3CXXQBOBWKHK2I4MNZ7TW3BGWALNVS6APZWYOTFB4FX6TUZ6
-    scopes:                 # granted scopes; prefix wildcards supported
-      - call:/example.v1.WidgetService/*
-    ttl: 720h               # optional; defaults to 720h (30 days)
-
-  - id: globex
-    key: ACBRLM7PKDRISQEMHSUS5ELUOPMXMMHBOZN555RSO2QZEYXBYELH3SYQ
-    scopes:
-      - call:*              # everything
+    # No account key: a fresh pair is generated per mint. Such an account
+    # cannot have users minted from this manifest (its signing seed has no
+    # stable VALISS_SEED_ name).
+    - id: globex
+      scopes:
+        - call:*              # everything

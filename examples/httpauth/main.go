@@ -1,7 +1,7 @@
 // Example httpauth shows the full tenant-auth wiring for net/http: an
-// issuer signs a scoped token, the server wraps its mux with the auth
-// middleware, and the client signs every request via the transport. Runs
-// self-contained against a local listener.
+// operator signs a scoped account token, the server wraps its mux with the
+// auth middleware, and the client signs every request via the transport.
+// Runs self-contained against a local listener.
 package main
 
 import (
@@ -20,26 +20,27 @@ import (
 )
 
 func main() {
-	// Issuer side: mint the trust anchor, a tenant key, and a scoped token,
-	// bundled the same way the valiss CLI ships it to a client.
-	issuer, err := nkeys.CreateOperator()
+	// Operator side: mint the trust anchor, a tenant account key, and a
+	// scoped account token, bundled the same way the valiss CLI ships it to
+	// a client.
+	operator, err := nkeys.CreateOperator()
 	check(err)
-	issuerPub, err := issuer.PublicKey()
+	operatorPub, err := operator.PublicKey()
 	check(err)
-	tenant, err := nkeys.CreateAccount()
+	account, err := nkeys.CreateAccount()
 	check(err)
-	tenantPub, err := tenant.PublicKey()
+	accountPub, err := account.PublicKey()
 	check(err)
-	tenantSeed, err := tenant.Seed()
+	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := token.Issue(issuer, "acme", tenantPub, []string{"call:/v1/*"}, time.Hour)
+	tok, err := token.Issue(operator, "acme", accountPub, []string{"call:/v1/*"}, time.Hour)
 	check(err)
-	claims, err := token.Verify(tok, issuerPub)
+	claims, err := token.Verify(tok, operatorPub)
 	check(err)
-	bundle := creds.Format(tok, tenantSeed)
+	bundle := creds.Format(creds.Bundle{Token: tok, Seed: accountSeed})
 
-	// Server side: the issuer public key and the allowlist are all the
+	// Server side: the operator public key and the allowlist are all the
 	// server needs; it never sees any seeds.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +54,7 @@ func main() {
 		io.WriteString(w, "admin area\n")
 	})
 	mw := httpauth.NewMiddleware(
-		token.NewVerifier(issuerPub, token.NewStaticAllowlist(claims.ID)),
+		token.NewVerifier(operatorPub, token.NewStaticAllowlist(claims.ID)),
 		httpauth.WithPathScope(),
 	)
 	srv := httptest.NewServer(mw(mux))
@@ -61,9 +62,9 @@ func main() {
 
 	// Client side: parse the creds bundle and sign every request via the
 	// transport.
-	clientToken, clientSeed, err := creds.Parse(bundle)
+	clientBundle, err := creds.Parse(bundle)
 	check(err)
-	transport, err := httpauth.NewTransport(clientToken, clientSeed, nil)
+	transport, err := httpauth.NewTransport(clientBundle, nil)
 	check(err)
 	client := &http.Client{Transport: transport}
 

@@ -1,5 +1,5 @@
 // Package token implements the core of the tenant authentication scheme,
-// modeled on NATS operator/user credentials:
+// modeled on NATS operator/account credentials:
 //
 //   - An issuer holds an Ed25519 nkey; its public key is the trust anchor
 //     servers pin.
@@ -12,7 +12,12 @@
 //     tenant identity to the handler for data segmentation.
 //
 // In nkeys terms the issuer key is an operator-type key (SO... seed, O...
-// public key); "issuer" is this scheme's name for the role.
+// public key) and the tenant key is an account-type key (SA.../A...),
+// mirroring the NATS Operator -> Account levels; "issuer" and "tenant" are
+// this scheme's names for the roles. The mapping leaves room for a future
+// Account -> User level where a tenant signs scoped user tokens with its
+// account seed, so tenant keys must stay account-type and the tenant public
+// key stays required even for bearer-scoped tokens.
 package token
 
 import (
@@ -36,6 +41,10 @@ const (
 type Claims struct {
 	// TenantID identifies the tenant; it segments all stored data.
 	TenantID string
+	// UserID identifies the end user on chain-verified requests, where an
+	// account-signed user token accompanies the tenant token. Empty when the
+	// tenant itself made the request.
+	UserID string
 	// PubKey is the tenant's nkey public key that must sign requests.
 	PubKey string
 	// Scopes granted to the tenant.
@@ -48,11 +57,11 @@ type Claims struct {
 	ExpiresAt time.Time
 }
 
-// Issue mints a tenant token signed by the issuer key. tenantPubKey is the
+// Issue mints a tenant token signed by the operator key. tenantPubKey is the
 // tenant's nkey public key; the tenant signs requests with the matching seed.
-func Issue(issuer nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, ttl time.Duration) (string, error) {
-	if pub, err := issuer.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
-		return "", fmt.Errorf("valiss: issuer is not an operator-type nkey (expected an SO... seed)")
+func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, ttl time.Duration) (string, error) {
+	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
+		return "", fmt.Errorf("valiss: tenant tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
 	if !nkeys.IsValidPublicUserKey(tenantPubKey) && !nkeys.IsValidPublicAccountKey(tenantPubKey) {
 		return "", fmt.Errorf("valiss: invalid tenant public key")
@@ -64,16 +73,49 @@ func Issue(issuer nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string,
 	gc.Expires = time.Now().Add(ttl).Unix()
 	gc.Data[pubKeyClaim] = tenantPubKey
 	gc.Data[scopesClaim] = scopes
-	token, err := gc.Encode(issuer)
+	token, err := gc.Encode(operator)
 	if err != nil {
 		return "", fmt.Errorf("valiss: encode token: %w", err)
 	}
 	return token, nil
 }
 
+// IssueUser mints a user token signed by a tenant's account key, delegating a
+// subset of the tenant's access to an end user. userPubKey is the user's nkey
+// public key; it may be empty only when scopes grant ScopeBearer, producing a
+// token-only credential for users that cannot sign requests.
+func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string, ttl time.Duration) (string, error) {
+	if pub, err := account.PublicKey(); err != nil || !nkeys.IsValidPublicAccountKey(pub) {
+		return "", fmt.Errorf("valiss: user tokens must be signed by an account-type nkey (expected an SA... seed)")
+	}
+	if userPubKey == "" {
+		if !slices.Contains(scopes, ScopeBearer) {
+			return "", fmt.Errorf("valiss: user token without a key requires the %q scope", ScopeBearer)
+		}
+	} else if !nkeys.IsValidPublicUserKey(userPubKey) && !nkeys.IsValidPublicAccountKey(userPubKey) {
+		return "", fmt.Errorf("valiss: invalid user public key")
+	}
+	if ttl <= 0 {
+		return "", fmt.Errorf("valiss: ttl must be positive")
+	}
+	gc := jwt.NewGenericClaims(userID)
+	gc.Expires = time.Now().Add(ttl).Unix()
+	if userPubKey != "" {
+		gc.Data[pubKeyClaim] = userPubKey
+	}
+	gc.Data[scopesClaim] = scopes
+	token, err := gc.Encode(account)
+	if err != nil {
+		return "", fmt.Errorf("valiss: encode user token: %w", err)
+	}
+	return token, nil
+}
+
 // Verify decodes a token, checks its signature and issuer, and returns the
-// claims. It does NOT check expiry or the allowlist; the interceptor layers
-// those so callers get precise errors.
+// claims. The claims' TenantID carries the token subject, whichever level the
+// token is for. Verify does NOT check expiry or the allowlist; the Verifier
+// layers those so callers get precise errors. A token may omit the bound key
+// only when its scopes grant ScopeBearer.
 func Verify(token, issuerPubKey string) (*Claims, error) {
 	gc, err := jwt.DecodeGeneric(token)
 	if err != nil {
@@ -83,13 +125,14 @@ func Verify(token, issuerPubKey string) (*Claims, error) {
 		return nil, fmt.Errorf("valiss: token not signed by the expected issuer")
 	}
 	pubKey, _ := gc.Data[pubKeyClaim].(string)
-	if pubKey == "" {
+	scopes := toStrings(gc.Data[scopesClaim])
+	if pubKey == "" && !slices.Contains(scopes, ScopeBearer) {
 		return nil, errors.New("valiss: token missing tenant key")
 	}
 	claims := &Claims{
 		TenantID: gc.Subject,
 		PubKey:   pubKey,
-		Scopes:   toStrings(gc.Data[scopesClaim]),
+		Scopes:   scopes,
 		ID:       gc.ID,
 		Issuer:   gc.Issuer,
 	}
@@ -113,8 +156,14 @@ func (c *Claims) HasScope(scope string) bool {
 // grant ending in "*" is a prefix wildcard, so "call:/svc/*" covers every
 // method of that service and "call:*" covers every call.
 func (c *Claims) Authorizes(required string) bool {
-	for _, granted := range c.Scopes {
-		if scopeMatch(granted, required) {
+	return Covered(c.Scopes, required)
+}
+
+// Covered reports whether any granted scope covers the required scope,
+// honoring trailing-"*" prefix wildcards.
+func Covered(granted []string, required string) bool {
+	for _, g := range granted {
+		if scopeMatch(g, required) {
 			return true
 		}
 	}

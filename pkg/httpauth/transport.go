@@ -7,44 +7,48 @@ import (
 
 	"github.com/nats-io/nkeys"
 
+	"github.com/mikluko/valiss/pkg/creds"
 	"github.com/mikluko/valiss/pkg/token"
 )
 
-// Transport is an http.RoundTripper that attaches the tenant token and a
-// fresh per-call signature to every request. Set it as (or wrap it around)
-// http.Client.Transport.
+// Transport is an http.RoundTripper that attaches the credential bundle's
+// tokens and, when the bundle holds a seed, a fresh per-request signature.
+// Bundles without a seed are bearer credentials: the server accepts them only
+// when the effective token grants token.ScopeBearer. Set it as (or wrap it
+// around) http.Client.Transport.
 type Transport struct {
-	base   http.RoundTripper
-	token  string
-	tenant nkeys.KeyPair
-	now    func() time.Time
+	base      http.RoundTripper
+	token     string
+	userToken string
+	subject   nkeys.KeyPair
+	now       func() time.Time
 }
 
-// NewTransport builds a client transport from the issuer-signed token and
-// the tenant seed that matches the token's bound key. A nil base means
+// NewTransport builds a client transport from a creds bundle: the tenant
+// token, the optional user token, and the seed matching the effective
+// token's bound key (nil for bearer bundles). A nil base means
 // http.DefaultTransport.
-func NewTransport(tok string, tenantSeed []byte, base http.RoundTripper) (*Transport, error) {
-	tenant, err := nkeys.FromSeed(tenantSeed)
-	if err != nil {
-		return nil, fmt.Errorf("valiss: tenant seed: %w", err)
+func NewTransport(b creds.Bundle, base http.RoundTripper) (*Transport, error) {
+	t := &Transport{base: base, token: b.Token, userToken: b.UserToken, now: time.Now}
+	if len(b.Seed) > 0 {
+		subject, err := nkeys.FromSeed(b.Seed)
+		if err != nil {
+			return nil, fmt.Errorf("valiss: creds seed: %w", err)
+		}
+		t.subject = subject
 	}
-	return &Transport{base: base, token: tok, tenant: tenant, now: time.Now}, nil
-}
-
-// NewBearerTransport builds a client transport that attaches the token alone,
-// without per-request signatures; no seed is needed. The server accepts such
-// requests only when the token grants token.ScopeBearer. A nil base means
-// http.DefaultTransport.
-func NewBearerTransport(tok string, base http.RoundTripper) *Transport {
-	return &Transport{base: base, token: tok, now: time.Now}
+	return t, nil
 }
 
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// RoundTrippers must not mutate the caller's request.
 	req = req.Clone(req.Context())
 	req.Header.Set(token.HeaderToken, t.token)
-	if t.tenant != nil {
-		timestamp, signature, err := token.SignRequest(t.tenant, t.now())
+	if t.userToken != "" {
+		req.Header.Set(token.HeaderUserToken, t.userToken)
+	}
+	if t.subject != nil {
+		timestamp, signature, err := token.SignRequest(t.subject, t.now())
 		if err != nil {
 			return nil, err
 		}

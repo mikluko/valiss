@@ -9,27 +9,42 @@ import (
 // gRPC metadata keys and HTTP header names alike.
 const (
 	HeaderToken     = "valiss-tenant-token"
+	HeaderUserToken = "valiss-user-token"
 	HeaderTimestamp = "valiss-tenant-timestamp"
 	HeaderSignature = "valiss-tenant-signature"
 )
 
-// ScopeBearer is the scope a token must carry for the tenant to make bearer
+// ScopeBearer is the scope a token must carry for its holder to make bearer
 // requests: the token alone, without the per-request signature. Bearer tokens
 // are replayable until they expire or leave the allowlist, so grant this only
-// to tenants that cannot sign (no seed distribution) and pair it with TLS and
+// to holders that cannot sign (no seed distribution) and pair it with TLS and
 // short TTLs.
 const ScopeBearer = "bearer"
 
-// Verifier checks the full per-request credential triple: token signature and
-// issuer, expiry, allowlist membership, and the request signature within the
-// skew window. Requests without a signature pass only when the token grants
+// Credential is the per-request material a transport extracts from headers.
+type Credential struct {
+	// Token is the operator-signed tenant token.
+	Token string
+	// UserToken is the account-signed user token on chain credentials; empty
+	// when the tenant itself makes the request.
+	UserToken string
+	// Timestamp and Signature are the per-request signing proof; both empty
+	// on bearer requests.
+	Timestamp string
+	Signature string
+}
+
+// Verifier checks the full per-request credential: tenant token signature
+// against the pinned operator key, expiry, allowlist membership, the optional
+// user-token chain, and the request signature within the skew window.
+// Requests without a signature pass only when the effective token grants
 // ScopeBearer. Transport layers (gRPC interceptor, HTTP middleware) wrap it
 // with header extraction and error mapping.
 type Verifier struct {
-	issuerPubKey string
-	allowlist    Allowlist
-	skew         time.Duration
-	now          func() time.Time
+	operatorPubKey string
+	allowlist      Allowlist
+	skew           time.Duration
+	now            func() time.Time
 }
 
 // VerifierOption configures a Verifier.
@@ -46,12 +61,12 @@ func WithClock(now func() time.Time) VerifierOption {
 	return func(v *Verifier) { v.now = now }
 }
 
-func NewVerifier(issuerPubKey string, allowlist Allowlist, opts ...VerifierOption) *Verifier {
+func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOption) *Verifier {
 	v := &Verifier{
-		issuerPubKey: issuerPubKey,
-		allowlist:    allowlist,
-		skew:         DefaultSkew,
-		now:          time.Now,
+		operatorPubKey: operatorPubKey,
+		allowlist:      allowlist,
+		skew:           DefaultSkew,
+		now:            time.Now,
 	}
 	for _, opt := range opts {
 		opt(v)
@@ -59,12 +74,21 @@ func NewVerifier(issuerPubKey string, allowlist Allowlist, opts ...VerifierOptio
 	return v
 }
 
-// VerifyCredential authenticates a request credential and returns the tenant
-// claims. Any error means the request must be rejected as unauthenticated. An
-// empty timestamp and signature is a bearer request, accepted only when the
-// token grants ScopeBearer.
-func (v *Verifier) VerifyCredential(token, timestamp, signature string) (*Claims, error) {
-	claims, err := Verify(token, v.issuerPubKey)
+// VerifyCredential authenticates a request credential and returns the
+// effective claims. Any error means the request must be rejected as
+// unauthenticated.
+//
+// A credential with a user token is verified as a chain: the tenant token
+// against the operator key and the allowlist, then the user token against the
+// tenant token's bound account key. The effective scopes are the user's
+// scopes clamped to those the tenant holds, so a tenant can never delegate
+// more than it has; ScopeBearer passes through unclamped because it selects
+// an authentication mode, not an authorization grant.
+//
+// An empty timestamp and signature is a bearer request, accepted only when
+// the effective token grants ScopeBearer.
+func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
+	claims, err := Verify(cred.Token, v.operatorPubKey)
 	if err != nil {
 		return nil, err
 	}
@@ -75,14 +99,55 @@ func (v *Verifier) VerifyCredential(token, timestamp, signature string) (*Claims
 	if !v.allowlist.Allowed(claims.ID) {
 		return nil, errors.New("valiss: tenant token not recognized")
 	}
-	if timestamp == "" && signature == "" {
+	if cred.UserToken != "" {
+		user, err := Verify(cred.UserToken, claims.PubKey)
+		if err != nil {
+			return nil, err
+		}
+		if user.Expired(now, v.skew) {
+			return nil, errors.New("valiss: user token expired")
+		}
+		scopes := make([]string, 0, len(user.Scopes))
+		for _, s := range user.Scopes {
+			if s == ScopeBearer || Covered(claims.Scopes, s) {
+				scopes = append(scopes, s)
+			}
+		}
+		claims = &Claims{
+			TenantID:  claims.TenantID,
+			UserID:    user.TenantID,
+			PubKey:    user.PubKey,
+			Scopes:    scopes,
+			ID:        claims.ID,
+			Issuer:    claims.Issuer,
+			ExpiresAt: minExpiry(claims.ExpiresAt, user.ExpiresAt),
+		}
+	}
+	if cred.Timestamp == "" && cred.Signature == "" {
 		if !claims.HasScope(ScopeBearer) {
 			return nil, errors.New("valiss: request signature required: token does not grant the bearer scope")
 		}
 		return claims, nil
 	}
-	if err := VerifyRequest(claims.PubKey, timestamp, signature, now, v.skew); err != nil {
+	if claims.PubKey == "" {
+		return nil, errors.New("valiss: request signature present but token binds no key")
+	}
+	if err := VerifyRequest(claims.PubKey, cred.Timestamp, cred.Signature, now, v.skew); err != nil {
 		return nil, err
 	}
 	return claims, nil
+}
+
+// minExpiry returns the earlier of two expiries, ignoring zero values.
+func minExpiry(a, b time.Time) time.Time {
+	switch {
+	case a.IsZero():
+		return b
+	case b.IsZero():
+		return a
+	case b.Before(a):
+		return b
+	default:
+		return a
+	}
 }

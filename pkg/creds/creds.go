@@ -1,11 +1,15 @@
-// Package creds implements the client credential bundle file: an
-// issuer-signed token paired with the tenant seed that must sign requests,
-// modeled on the nsc creds format. The two together are everything a client
-// needs.
+// Package creds implements the client credential bundle file: the tokens a
+// client presents plus the seed that signs its requests, modeled on the nsc
+// creds format. A bundle is everything a client needs.
+//
+// An account-level bundle holds the operator-signed tenant token and the
+// account seed. A user-level bundle additionally holds the account-signed
+// user token, and its seed is the user's. A bearer bundle carries tokens
+// only: its holder cannot sign requests and the server accepts it only when
+// the token grants the bearer scope.
 package creds
 
 import (
-	"bufio"
 	"fmt"
 	"os"
 	"strings"
@@ -13,59 +17,98 @@ import (
 
 // Creds file markers.
 const (
-	tokenBegin = "-----BEGIN VALISS TOKEN-----"
-	tokenEnd   = "------END VALISS TOKEN------"
-	seedBegin  = "-----BEGIN VALISS SEED-----"
-	seedEnd    = "------END VALISS SEED------"
+	tokenBegin     = "-----BEGIN VALISS TOKEN-----"
+	tokenEnd       = "------END VALISS TOKEN------"
+	userTokenBegin = "-----BEGIN VALISS USER TOKEN-----"
+	userTokenEnd   = "------END VALISS USER TOKEN------"
+	seedBegin      = "-----BEGIN VALISS SEED-----"
+	seedEnd        = "------END VALISS SEED------"
 )
 
-// Format renders a creds file bundling the token and the tenant seed.
-func Format(token string, seed []byte) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n%s\n%s\n\n", tokenBegin, strings.TrimSpace(token), tokenEnd)
-	fmt.Fprintf(&b, "%s\n%s\n%s\n", seedBegin, strings.TrimSpace(string(seed)), seedEnd)
-	fmt.Fprint(&b, "\n************************* IMPORTANT *************************\n"+
-		"Seed lets anyone sign as this tenant. Keep it secret.\n")
-	return b.String()
+// Bundle is the parsed content of a creds file.
+type Bundle struct {
+	// Token is the operator-signed tenant token, present in every bundle.
+	Token string
+	// UserToken is the account-signed user token; empty in account-level
+	// bundles.
+	UserToken string
+	// Seed signs requests as the bundle's subject: the account seed in an
+	// account-level bundle, the user seed in a user-level one. Nil in bearer
+	// bundles.
+	Seed []byte
 }
 
-// Parse extracts the token and seed from a creds file's contents.
-func Parse(contents string) (token string, seed []byte, err error) {
-	token, err = between(contents, tokenBegin, tokenEnd)
-	if err != nil {
-		return "", nil, fmt.Errorf("valiss: creds token: %w", err)
+// Format renders a creds file for the bundle.
+func Format(b Bundle) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s\n%s\n%s\n", tokenBegin, strings.TrimSpace(b.Token), tokenEnd)
+	if b.UserToken != "" {
+		fmt.Fprintf(&sb, "\n%s\n%s\n%s\n", userTokenBegin, strings.TrimSpace(b.UserToken), userTokenEnd)
 	}
-	s, err := between(contents, seedBegin, seedEnd)
-	if err != nil {
-		return "", nil, fmt.Errorf("valiss: creds seed: %w", err)
+	if len(b.Seed) > 0 {
+		fmt.Fprintf(&sb, "\n%s\n%s\n%s\n", seedBegin, strings.TrimSpace(string(b.Seed)), seedEnd)
+		fmt.Fprint(&sb, "\n************************* IMPORTANT *************************\n"+
+			"Seed lets anyone sign as this identity. Keep it secret.\n")
 	}
-	return token, []byte(s), nil
+	return sb.String()
+}
+
+// Parse extracts the bundle from a creds file's contents. The tenant token is
+// required; the user token and seed sections are optional.
+func Parse(contents string) (Bundle, error) {
+	var b Bundle
+	tok, ok, err := between(contents, tokenBegin, tokenEnd)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("valiss: creds token: %w", err)
+	}
+	if !ok {
+		return Bundle{}, fmt.Errorf("valiss: creds token: marker %q not found", tokenBegin)
+	}
+	b.Token = tok
+	userTok, ok, err := between(contents, userTokenBegin, userTokenEnd)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("valiss: creds user token: %w", err)
+	}
+	if ok {
+		b.UserToken = userTok
+	}
+	seed, ok, err := between(contents, seedBegin, seedEnd)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("valiss: creds seed: %w", err)
+	}
+	if ok {
+		b.Seed = []byte(seed)
+	}
+	return b, nil
 }
 
 // Load reads and parses a creds file.
-func Load(path string) (token string, seed []byte, err error) {
+func Load(path string) (Bundle, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return "", nil, fmt.Errorf("valiss: read creds: %w", err)
+		return Bundle{}, fmt.Errorf("valiss: read creds: %w", err)
 	}
 	return Parse(string(raw))
 }
 
 // between returns the first non-empty line strictly between a begin and end
-// marker.
-func between(contents, begin, end string) (string, error) {
-	scanner := bufio.NewScanner(strings.NewReader(contents))
+// marker. The bool is false when the begin marker is absent; a present but
+// empty or unclosed section is an error.
+func between(contents, begin, end string) (string, bool, error) {
 	inside := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	for line := range strings.Lines(contents) {
+		line = strings.TrimSpace(line)
 		switch {
 		case line == begin:
 			inside = true
-		case line == end:
-			return "", fmt.Errorf("no content before %q", end)
+		case inside && line == end:
+			return "", false, fmt.Errorf("no content before %q", end)
 		case inside && line != "":
-			return line, nil
+			return line, true, nil
 		}
 	}
-	return "", fmt.Errorf("marker %q not found", begin)
+	if inside {
+		return "", false, fmt.Errorf("marker %q not closed", begin)
+	}
+	return "", false, nil
 }

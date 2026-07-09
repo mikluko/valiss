@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/mikluko/valiss/pkg/creds"
 	"github.com/mikluko/valiss/pkg/token"
 )
 
@@ -44,6 +45,13 @@ func echoTenant(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, claims.TenantID)
 }
 
+func newClient(t *testing.T, b creds.Bundle) *http.Client {
+	t.Helper()
+	transport, err := NewTransport(b, nil)
+	require.NoError(t, err)
+	return &http.Client{Transport: transport}
+}
+
 func TestMiddlewareTransport(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
@@ -54,9 +62,7 @@ func TestMiddlewareTransport(t *testing.T) {
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	transport, err := NewTransport(tok, seed, nil)
-	require.NoError(t, err)
-	client := &http.Client{Transport: transport}
+	client := newClient(t, creds.Bundle{Token: tok, Seed: seed})
 
 	t.Run("authenticated request reaches handler with tenant", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -86,9 +92,7 @@ func TestMiddlewareScope(t *testing.T) {
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	transport, err := NewTransport(tok, seed, nil)
-	require.NoError(t, err)
-	client := &http.Client{Transport: transport}
+	client := newClient(t, creds.Bundle{Token: tok, Seed: seed})
 
 	t.Run("granted path allowed", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -115,7 +119,7 @@ func TestBearerTransport(t *testing.T) {
 	t.Run("bearer scope allows token-only request", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
 		require.NoError(t, err)
-		client := &http.Client{Transport: NewBearerTransport(tok, nil)}
+		client := newClient(t, creds.Bundle{Token: tok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -128,7 +132,7 @@ func TestBearerTransport(t *testing.T) {
 	t.Run("no bearer scope denies token-only request", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
 		require.NoError(t, err)
-		client := &http.Client{Transport: NewBearerTransport(tok, nil)}
+		client := newClient(t, creds.Bundle{Token: tok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -154,9 +158,7 @@ func TestMiddlewareRejections(t *testing.T) {
 		strict := NewMiddleware(token.NewVerifier(opPub, token.NewStaticAllowlist("other")))
 		srv2 := httptest.NewServer(strict(http.HandlerFunc(echoTenant)))
 		defer srv2.Close()
-		transport, err := NewTransport(tok, seed, nil)
-		require.NoError(t, err)
-		resp, err := (&http.Client{Transport: transport}).Get(srv2.URL)
+		resp, err := newClient(t, creds.Bundle{Token: tok, Seed: seed}).Get(srv2.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
@@ -179,7 +181,7 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 
 	t.Run("transport does not mutate caller request", func(t *testing.T) {
-		transport, err := NewTransport(tok, seed, nil)
+		transport, err := NewTransport(creds.Bundle{Token: tok, Seed: seed}, nil)
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
@@ -187,5 +189,50 @@ func TestMiddlewareRejections(t *testing.T) {
 		require.NoError(t, err)
 		resp.Body.Close()
 		assert.Empty(t, req.Header.Get(token.HeaderToken))
+	})
+}
+
+// TestUserChain proves a user-level bundle authenticates through the
+// middleware with the delegated identity.
+func TestUserChain(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	account, accountPub, _ := tenantKeys(t)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userPub, err := user.PublicKey()
+	require.NoError(t, err)
+	userSeed, err := user.Seed()
+	require.NoError(t, err)
+
+	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	require.NoError(t, err)
+	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/v1/checks"}, time.Hour)
+	require.NoError(t, err)
+
+	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())
+	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, ok := token.TenantFromContext(r.Context())
+		require.True(t, ok)
+		io.WriteString(w, claims.TenantID+"/"+claims.UserID)
+	})))
+	defer srv.Close()
+
+	client := newClient(t, creds.Bundle{Token: acctTok, UserToken: userTok, Seed: userSeed})
+
+	t.Run("delegated path allowed with user identity", func(t *testing.T) {
+		resp, err := client.Get(srv.URL + "/v1/checks")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "acme/alice", string(body))
+	})
+
+	t.Run("path beyond the delegation denied", func(t *testing.T) {
+		resp, err := client.Get(srv.URL + "/v1/admin")
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
 }

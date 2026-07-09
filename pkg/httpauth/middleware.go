@@ -51,14 +51,17 @@ func NewMiddleware(verifier *token.Verifier, opts ...Option) func(http.Handler) 
 }
 
 func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	tok := r.Header.Get(token.HeaderToken)
-	timestamp := r.Header.Get(token.HeaderTimestamp)
-	signature := r.Header.Get(token.HeaderSignature)
-	if tok == "" {
+	cred := token.Credential{
+		Token:     r.Header.Get(token.HeaderToken),
+		UserToken: r.Header.Get(token.HeaderUserToken),
+		Timestamp: r.Header.Get(token.HeaderTimestamp),
+		Signature: r.Header.Get(token.HeaderSignature),
+	}
+	if cred.Token == "" {
 		http.Error(w, "missing tenant credential", http.StatusUnauthorized)
 		return
 	}
-	claims, err := m.verifier.VerifyCredential(tok, timestamp, signature)
+	claims, err := m.verifier.VerifyCredential(cred)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return

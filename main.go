@@ -1,33 +1,38 @@
 // Command valiss issues tenant credentials for gRPC and HTTP services
-// using the issuer/tenant nkey model (NATS operator/user style). It is
-// stateless: seeds are printed once at generation and never stored; the
-// caller preserves them securely.
+// using the operator/account/user nkey model (NATS style). It is stateless:
+// key pairs are printed once at generation and never stored; signing seeds
+// are supplied via VALISS_SEED_<PUBKEY> environment variables.
 //
-//	valiss keygen issuer              # one-time: issuer key pair (trust anchor)
-//	valiss keygen tenant              # per-tenant key pair
-//	valiss issue                      # mint tokens for valiss.yaml entries
+//	valiss keygen operator            # one-time: operator key pair (trust anchor)
+//	valiss keygen account             # per-tenant key pair
+//	valiss keygen user                # per-end-user key pair
+//	valiss creds ACCOUNT[/USER]       # mint a credential bundle for one entity
 //
-// issue reads a token manifest (valiss.yaml in the working directory,
-// override with -f) declaring the issuer public key and the tokens to mint
-// (tenant id, public key, scopes, ttl), signs a token per entry with the
-// issuer seed (-seed-file or $VALISS_ISSUER_SEED, which must match the
-// manifest issuer), and writes the results to stdout as YAML. The jti of
-// each token is what the server-side allowlist accepts.
+// creds reads a token manifest (valiss.yaml in the working directory,
+// override with -f) declaring the credential tree, resolves every required
+// seed from VALISS_SEED_<PUBKEY> environment variables (failing when one is
+// missing), and writes the credential bundle to stdout and its metadata --
+// including the jti the server-side allowlist accepts -- to stderr as YAML.
+// Manifest entries without a key get a fresh key pair generated per
+// invocation; the seed ships inside the bundle and is never stored.
 package main
 
 import (
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
+	"github.com/nats-io/jwt/v2"
 	"github.com/nats-io/nkeys"
 	"gopkg.in/yaml.v3"
 
 	"github.com/mikluko/valiss/internal/manifest"
+	"github.com/mikluko/valiss/pkg/creds"
 	"github.com/mikluko/valiss/pkg/token"
 )
 
@@ -40,8 +45,8 @@ func main() {
 	switch os.Args[1] {
 	case "keygen":
 		err = cmdKeygen(os.Stdout, os.Stderr, os.Args[2:])
-	case "issue":
-		err = cmdIssue(os.Stdout, os.Args[2:])
+	case "creds":
+		err = cmdCreds(os.Stdout, os.Stderr, os.Args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "valiss: unknown command %q\n\n", os.Args[1])
 		usage()
@@ -56,13 +61,15 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage: valiss <command> [flags]
 
 commands:
-  keygen issuer      generate the issuer key pair (server trust anchor)
-  keygen tenant      generate a tenant key pair
-  issue              issue tokens for the manifest entries, YAML to stdout
+  keygen operator    generate the operator key pair (server trust anchor)
+  keygen account     generate an account (tenant) key pair
+  keygen user        generate a user key pair
+  creds ACCOUNT[/USER]  mint a credential bundle for a manifest entry:
+                     bundle to stdout, metadata (allowlist jti) to stderr
       -f FILE          token manifest (default valiss.yaml)
-      -seed-file FILE  issuer seed file (default $VALISS_ISSUER_SEED)
 
 Seeds are never stored: keygen prints them once, preserve them securely.
+creds resolves signing seeds from VALISS_SEED_<PUBKEY> environment variables.
 `)
 }
 
@@ -70,7 +77,7 @@ Seeds are never stored: keygen prints them once, preserve them securely.
 // handling guidance to msg so redirected output stays parseable.
 func cmdKeygen(out, msg io.Writer, args []string) error {
 	if len(args) != 1 {
-		return errors.New("keygen requires a key type: issuer or tenant")
+		return errors.New("keygen requires a key type: operator, account, or user")
 	}
 	var (
 		kp   nkeys.KeyPair
@@ -78,15 +85,17 @@ func cmdKeygen(out, msg io.Writer, args []string) error {
 		hint string
 	)
 	switch args[0] {
-	case "issuer":
-		// The issuer role maps to the nkeys operator key type (SO... seed).
+	case "operator":
 		kp, err = nkeys.CreateOperator()
-		hint = "Public key is the server trust anchor. The seed signs tenant tokens:\npreserve it securely, it cannot be recovered and is never stored."
-	case "tenant":
+		hint = "Public key is the server trust anchor. The seed signs account tokens:\npreserve it as VALISS_SEED_<public>, it cannot be recovered and is never stored."
+	case "account":
 		kp, err = nkeys.CreateAccount()
-		hint = "Public key goes in valiss.yaml. The seed signs requests as this tenant:\nhand it to the tenant securely, it cannot be recovered and is never stored."
+		hint = "Public key goes in valiss.yaml. The seed signs requests as this tenant\nand its users' tokens: preserve it as VALISS_SEED_<public>."
+	case "user":
+		kp, err = nkeys.CreateUser()
+		hint = "Public key goes in a user entry in valiss.yaml. The seed signs requests\nas this user: hand it to the user securely, it is never stored."
 	default:
-		return fmt.Errorf("unknown key type %q; use issuer or tenant", args[0])
+		return fmt.Errorf("unknown key type %q; use operator, account, or user", args[0])
 	}
 	if err != nil {
 		return err
@@ -104,92 +113,202 @@ func cmdKeygen(out, msg io.Writer, args []string) error {
 	return nil
 }
 
-// issuedToken is one entry of the issue command's YAML output.
-type issuedToken struct {
-	// ID is the tenant id the token binds.
+// tokenMeta is the minted-token section of the creds command's metadata
+// output.
+type tokenMeta struct {
+	// ID is the entity id the token binds.
 	ID string `yaml:"id"`
-	// JTI is the token id the server-side allowlist accepts.
+	// Key is the entity's nkey public key; absent on bearer entries.
+	Key string `yaml:"key,omitempty"`
+	// Generated marks a key pair created by this invocation; its seed ships
+	// only inside the bundle.
+	Generated bool `yaml:"generated,omitempty"`
+	// JTI is the token id; the account jti is what the server-side allowlist
+	// accepts.
 	JTI string `yaml:"jti"`
 	// Expires is the token expiry, RFC3339.
 	Expires string `yaml:"expires"`
-	// Token is the signed tenant token.
-	Token string `yaml:"token"`
 }
 
-func cmdIssue(out io.Writer, args []string) error {
-	fs := flag.NewFlagSet("issue", flag.ContinueOnError)
+// credsMeta is the creds command's metadata output, written to stderr as
+// YAML so the bundle on stdout stays clean.
+type credsMeta struct {
+	Account tokenMeta  `yaml:"account"`
+	User    *tokenMeta `yaml:"user,omitempty"`
+}
+
+func cmdCreds(out, msg io.Writer, args []string) error {
+	fs := flag.NewFlagSet("creds", flag.ContinueOnError)
 	cfgPath := fs.String("f", "valiss.yaml", "token manifest file")
-	seedFile := fs.String("seed-file", "", "issuer seed file (default $VALISS_ISSUER_SEED)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if fs.NArg() != 0 {
-		return fmt.Errorf("unexpected arguments: %v", fs.Args())
+	if fs.NArg() != 1 {
+		return errors.New("creds requires exactly one ACCOUNT[/USER] argument")
 	}
-	op, err := issuerKey(*seedFile)
-	if err != nil {
-		return err
+	acctID, userID, wantUser := strings.Cut(fs.Arg(0), "/")
+	if acctID == "" || (wantUser && userID == "") {
+		return fmt.Errorf("bad entity path %q: want ACCOUNT or ACCOUNT/USER", fs.Arg(0))
 	}
-	opPub, err := op.PublicKey()
-	if err != nil {
-		return err
-	}
+
 	m, err := manifest.Load(*cfgPath)
 	if err != nil {
 		return err
 	}
-	if opPub != m.Issuer {
-		return fmt.Errorf("issuer seed does not match the manifest issuer %s", m.Issuer)
+	op, acct, err := m.FindAccount(acctID)
+	if err != nil {
+		return err
+	}
+	operator, err := seedFromEnv(op.Operator)
+	if err != nil {
+		return err
 	}
 
-	doc := struct {
-		Tokens []issuedToken `yaml:"tokens"`
-	}{}
-	for _, entry := range m.Tokens {
-		tok, err := token.Issue(op, entry.ID, entry.Key, entry.Scopes, entry.TTLOrDefault())
-		if err != nil {
-			return fmt.Errorf("issue %q: %w", entry.ID, err)
-		}
-		claims, err := token.Verify(tok, opPub)
-		if err != nil {
-			return fmt.Errorf("issue %q: %w", entry.ID, err)
-		}
-		doc.Tokens = append(doc.Tokens, issuedToken{
-			ID:      entry.ID,
-			JTI:     claims.ID,
-			Expires: claims.ExpiresAt.UTC().Format(time.RFC3339),
-			Token:   tok,
-		})
+	if !wantUser {
+		return mintAccount(out, msg, operator, acct)
 	}
-	enc := yaml.NewEncoder(out)
-	defer enc.Close()
-	return enc.Encode(doc)
+	return mintUser(out, msg, operator, acct, userID)
 }
 
-// issuerKey loads the issuer seed from the given file, falling back to the
-// VALISS_ISSUER_SEED environment variable.
-func issuerKey(seedFile string) (nkeys.KeyPair, error) {
-	var raw []byte
-	switch {
-	case seedFile != "":
-		b, err := os.ReadFile(seedFile)
-		if err != nil {
-			return nil, fmt.Errorf("issuer seed: %w", err)
-		}
-		raw = b
-	case os.Getenv("VALISS_ISSUER_SEED") != "":
-		raw = []byte(os.Getenv("VALISS_ISSUER_SEED"))
-	default:
-		return nil, errors.New("issuer seed required: pass -seed-file FILE or set $VALISS_ISSUER_SEED")
-	}
-	kp, err := nkeys.FromSeed(bytes.TrimSpace(raw))
+// mintAccount writes an account-level bundle: the operator-signed account
+// token plus the account seed.
+func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account) error {
+	subject, generated, err := subjectKey(acct.Key, nkeys.CreateAccount)
 	if err != nil {
-		return nil, fmt.Errorf("issuer seed: %w", err)
+		return err
 	}
-	if pub, err := kp.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
-		return nil, errors.New("issuer seed: not an operator-type nkey (expected an SO... seed)")
+	pub, err := subject.PublicKey()
+	if err != nil {
+		return err
+	}
+	tok, meta, err := mintToken(func() (string, error) {
+		return token.Issue(operator, acct.ID, pub, acct.Scopes, acct.TTLOrDefault())
+	}, acct.ID, pub, generated)
+	if err != nil {
+		return err
+	}
+	seed, err := subject.Seed()
+	if err != nil {
+		return err
+	}
+	fmt.Fprint(out, creds.Format(creds.Bundle{Token: tok, Seed: seed}))
+	return writeMeta(msg, credsMeta{Account: meta})
+}
+
+// mintUser writes a user-level bundle: a freshly signed account token, the
+// account-signed user token, and the user seed (absent for bearer users).
+func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account, userID string) error {
+	user, ok := acct.User(userID)
+	if !ok {
+		return fmt.Errorf("user %q not found under account %q", userID, acct.ID)
+	}
+	if acct.Key == "" {
+		return fmt.Errorf("account %q has no key in the manifest: user tokens are signed by the account seed, add the key and provide VALISS_SEED_<key>", acct.ID)
+	}
+	account, err := seedFromEnv(acct.Key)
+	if err != nil {
+		return err
+	}
+	acctTok, acctMeta, err := mintToken(func() (string, error) {
+		return token.Issue(operator, acct.ID, acct.Key, acct.Scopes, acct.TTLOrDefault())
+	}, acct.ID, acct.Key, false)
+	if err != nil {
+		return err
+	}
+
+	bundle := creds.Bundle{Token: acctTok}
+	scopes := user.Scopes
+	var (
+		userPub   string
+		generated bool
+	)
+	if user.Bearer {
+		if !slices.Contains(scopes, token.ScopeBearer) {
+			scopes = append(slices.Clip(scopes), token.ScopeBearer)
+		}
+	} else {
+		subject, gen, err := subjectKey(user.Key, nkeys.CreateUser)
+		if err != nil {
+			return err
+		}
+		if userPub, err = subject.PublicKey(); err != nil {
+			return err
+		}
+		if bundle.Seed, err = subject.Seed(); err != nil {
+			return err
+		}
+		generated = gen
+	}
+	userTok, userMeta, err := mintToken(func() (string, error) {
+		return token.IssueUser(account, user.ID, userPub, scopes, user.TTLOrDefault())
+	}, user.ID, userPub, generated)
+	if err != nil {
+		return err
+	}
+	bundle.UserToken = userTok
+
+	fmt.Fprint(out, creds.Format(bundle))
+	return writeMeta(msg, credsMeta{Account: acctMeta, User: &userMeta})
+}
+
+// mintToken mints a token via issue, decodes it back for its jti and expiry,
+// and builds the metadata entry.
+func mintToken(issue func() (string, error), id, pub string, generated bool) (string, tokenMeta, error) {
+	tok, err := issue()
+	if err != nil {
+		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", id, err)
+	}
+	// The token was minted in-process; decoding only re-reads its claims.
+	gc, err := jwt.DecodeGeneric(tok)
+	if err != nil {
+		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", id, err)
+	}
+	return tok, tokenMeta{
+		ID:        id,
+		Key:       pub,
+		Generated: generated,
+		JTI:       gc.ID,
+		Expires:   time.Unix(gc.Expires, 0).UTC().Format(time.RFC3339),
+	}, nil
+}
+
+// subjectKey resolves the subject key pair: from the environment when the
+// manifest names a key, freshly generated otherwise.
+func subjectKey(pub string, create func() (nkeys.KeyPair, error)) (kp nkeys.KeyPair, generated bool, err error) {
+	if pub != "" {
+		kp, err = seedFromEnv(pub)
+		return kp, false, err
+	}
+	kp, err = create()
+	return kp, true, err
+}
+
+// seedFromEnv loads the seed for a public key from VALISS_SEED_<pub> and
+// checks that it actually derives that key.
+func seedFromEnv(pub string) (nkeys.KeyPair, error) {
+	name := "VALISS_SEED_" + pub
+	raw := os.Getenv(name)
+	if raw == "" {
+		return nil, fmt.Errorf("seed for %s required: set $%s", pub, name)
+	}
+	kp, err := nkeys.FromSeed([]byte(strings.TrimSpace(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("$%s: %w", name, err)
+	}
+	derived, err := kp.PublicKey()
+	if err != nil {
+		return nil, fmt.Errorf("$%s: %w", name, err)
+	}
+	if derived != pub {
+		return nil, fmt.Errorf("$%s: seed derives %s, not %s", name, derived, pub)
 	}
 	return kp, nil
+}
+
+func writeMeta(w io.Writer, meta credsMeta) error {
+	enc := yaml.NewEncoder(w)
+	defer enc.Close()
+	return enc.Encode(meta)
 }
 
 func fatal(err error) {

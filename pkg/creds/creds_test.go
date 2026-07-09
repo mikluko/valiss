@@ -9,29 +9,52 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRoundTrip(t *testing.T) {
-	token := "eyJhbGciOiJlZDI1NTE5LW5rZXkifQ.payload.signature"
-	seed := []byte("SAAEXAMPLESEEDVALUE")
+const testToken = "eyJhbGciOiJlZDI1NTE5LW5rZXkifQ.payload.signature"
 
-	gotToken, gotSeed, err := Parse(Format(token, seed))
-	require.NoError(t, err)
-	assert.Equal(t, token, gotToken)
-	assert.Equal(t, string(seed), string(gotSeed))
+func TestRoundTrip(t *testing.T) {
+	t.Run("account bundle", func(t *testing.T) {
+		b := Bundle{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
+		got, err := Parse(Format(b))
+		require.NoError(t, err)
+		assert.Equal(t, b, got)
+	})
+
+	t.Run("user bundle", func(t *testing.T) {
+		b := Bundle{Token: testToken, UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
+		got, err := Parse(Format(b))
+		require.NoError(t, err)
+		assert.Equal(t, b, got)
+	})
+
+	t.Run("bearer bundle has no seed section", func(t *testing.T) {
+		b := Bundle{Token: testToken, UserToken: testToken + "u"}
+		rendered := Format(b)
+		assert.NotContains(t, rendered, "SEED")
+		got, err := Parse(rendered)
+		require.NoError(t, err)
+		assert.Equal(t, b, got)
+	})
 }
 
 func TestLoad(t *testing.T) {
-	token := "eyJhbGciOiJlZDI1NTE5LW5rZXkifQ.payload.signature"
-	seed := []byte("SAAEXAMPLESEEDVALUE")
+	b := Bundle{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
 	path := filepath.Join(t.TempDir(), "acme.creds")
-	require.NoError(t, os.WriteFile(path, []byte(Format(token, seed)), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte(Format(b)), 0o600))
 
-	gotToken, gotSeed, err := Load(path)
+	got, err := Load(path)
 	require.NoError(t, err)
-	assert.Equal(t, token, gotToken)
-	assert.Equal(t, string(seed), string(gotSeed))
+	assert.Equal(t, b, got)
 }
 
 func TestParseMissingMarker(t *testing.T) {
-	_, _, err := Parse("no markers here")
+	_, err := Parse("no markers here")
 	assert.ErrorContains(t, err, "not found")
+}
+
+func TestParseUnclosedSection(t *testing.T) {
+	_, err := Parse("-----BEGIN VALISS TOKEN-----\n" + testToken + "\n")
+	require.NoError(t, err, "content line closes the read")
+
+	_, err = Parse("-----BEGIN VALISS TOKEN-----\n")
+	assert.ErrorContains(t, err, "not closed")
 }
