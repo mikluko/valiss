@@ -1,0 +1,29 @@
+# Token manifest for `valiss issue`. Public data only, safe to commit.
+#
+# Copy to valiss.yaml (or pass -f FILE) and replace the keys with your own:
+#
+#   valiss keygen issuer    # public key goes in `issuer` below; the seed
+#                              # signs tokens (-seed-file or $VALISS_ISSUER_SEED)
+#   valiss keygen tenant    # public key goes in a token entry; the tenant
+#                              # keeps the seed and signs requests with it
+#
+# The keys below are throwaway examples; issuing against them fails unless
+# you hold the matching seeds.
+
+# Issuer public key: the trust anchor servers pin. `issue` refuses seeds that
+# do not match it.
+issuer: OCA53ND5LYODEDNGW47SGVWMKUE6NOG4J5A5EQ43GO2EHCWK34CMTSHH
+
+tokens:
+  # One entry per token to mint. `valiss issue` prints the token (for the
+  # client) and its jti (for the server-side allowlist) per entry.
+  - id: acme                # tenant id; segments all stored data
+    key: ACJG374E3CXXQBOBWKHK2I4MNZ7TW3BGWALNVS6APZWYOTFB4FX6TUZ6
+    scopes:                 # granted scopes; prefix wildcards supported
+      - call:/example.v1.WidgetService/*
+    ttl: 720h               # optional; defaults to 720h (30 days)
+
+  - id: globex
+    key: ACBRLM7PKDRISQEMHSUS5ELUOPMXMMHBOZN555RSO2QZEYXBYELH3SYQ
+    scopes:
+      - call:*              # everything
