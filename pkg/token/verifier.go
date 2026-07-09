@@ -40,6 +40,37 @@ type Credential struct {
 // the request as unauthenticated.
 type ClaimsValidator func(cred Credential, claims *Claims) error
 
+// AccountTokenResolver supplies the operator-signed account token for an
+// account public key, serving requests that carry only a user token (creds
+// minted with -no-account-token). The resolved token goes through the full
+// verification: operator signature, expiry, allowlist.
+type AccountTokenResolver func(accountPubKey string) (string, error)
+
+// StaticAccountTokens builds a resolver over a fixed token set, e.g. from
+// server configuration. Tokens are indexed by their bound account key; their
+// signatures are checked here, their trust is established per request.
+func StaticAccountTokens(tokens ...string) (AccountTokenResolver, error) {
+	byKey := make(map[string]string, len(tokens))
+	for _, tok := range tokens {
+		issuer, err := IssuerOf(tok)
+		if err != nil {
+			return nil, err
+		}
+		claims, err := Verify(tok, issuer)
+		if err != nil {
+			return nil, err
+		}
+		byKey[claims.PubKey] = tok
+	}
+	return func(accountPubKey string) (string, error) {
+		tok, ok := byKey[accountPubKey]
+		if !ok {
+			return "", errors.New("valiss: no account token configured for the user token's account")
+		}
+		return tok, nil
+	}, nil
+}
+
 // Verifier checks the full per-request credential: tenant token signature
 // against the pinned operator key, expiry, allowlist membership, the optional
 // user-token chain, and the request signature within the skew window.
@@ -52,6 +83,7 @@ type Verifier struct {
 	skew           time.Duration
 	now            func() time.Time
 	validators     []ClaimsValidator
+	resolver       AccountTokenResolver
 }
 
 // VerifierOption configures a Verifier.
@@ -72,6 +104,13 @@ func WithClock(now func() time.Time) VerifierOption {
 // pipeline. Validators run in registration order; the first error wins.
 func WithClaimsValidator(fn ClaimsValidator) VerifierOption {
 	return func(v *Verifier) { v.validators = append(v.validators, fn) }
+}
+
+// WithAccountTokenResolver accepts requests that carry only a user token,
+// resolving the account token server-side. Without it such requests are
+// rejected.
+func WithAccountTokenResolver(fn AccountTokenResolver) VerifierOption {
+	return func(v *Verifier) { v.resolver = fn }
 }
 
 func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOption) *Verifier {
@@ -101,6 +140,23 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 // An empty timestamp and signature is a bearer request, accepted only when
 // the effective token grants ScopeBearer.
 func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
+	if cred.Token == "" {
+		if cred.UserToken == "" {
+			return nil, errors.New("valiss: missing tenant credential")
+		}
+		if v.resolver == nil {
+			return nil, errors.New("valiss: request carries no tenant token and the server has no account token resolver")
+		}
+		accountPubKey, err := IssuerOf(cred.UserToken)
+		if err != nil {
+			return nil, err
+		}
+		tok, err := v.resolver(accountPubKey)
+		if err != nil {
+			return nil, err
+		}
+		cred.Token = tok
+	}
 	claims, err := Verify(cred.Token, v.operatorPubKey)
 	if err != nil {
 		return nil, err

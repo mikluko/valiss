@@ -214,6 +214,54 @@ func TestCredsGeneratedUser(t *testing.T) {
 	assert.WithinDuration(t, time.Now().Add(30*time.Minute), expires, time.Minute)
 }
 
+func TestCredsUserNoAccountToken(t *testing.T) {
+	f := newFixture(t)
+	// Only the account seed: -no-account-token needs no operator seed.
+	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
+	t.Setenv("VALISS_SEED_"+f.userPub, f.userSeed)
+
+	var out, msg bytes.Buffer
+	require.NoError(t, cmdCreds(&out, &msg, []string{"-f", f.cfgPath, "-no-account-token", "acme/alice"}))
+	bundle, err := creds.Parse(out.String())
+	require.NoError(t, err)
+	assert.Empty(t, bundle.Token, "account token omitted")
+	require.NotEmpty(t, bundle.UserToken)
+
+	var meta credsMeta
+	require.NoError(t, yaml.Unmarshal(msg.Bytes(), &meta))
+	assert.Nil(t, meta.Account)
+	require.NotNil(t, meta.User)
+
+	// A server with the account token in static configuration accepts it.
+	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, time.Hour)
+	require.NoError(t, err)
+	acct, err := token.Verify(acctTok, f.opPub)
+	require.NoError(t, err)
+	resolver, err := token.StaticAccountTokens(acctTok)
+	require.NoError(t, err)
+	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID), token.WithAccountTokenResolver(resolver))
+
+	kp, err := nkeys.FromSeed(bundle.Seed)
+	require.NoError(t, err)
+	ts, sig, err := token.SignRequest(kp, time.Now())
+	require.NoError(t, err)
+	claims, err := v.VerifyCredential(token.Credential{UserToken: bundle.UserToken, Timestamp: ts, Signature: sig})
+	require.NoError(t, err)
+	assert.Equal(t, "alice", claims.UserID)
+
+	t.Run("rejected for account-level creds", func(t *testing.T) {
+		err := cmdCreds(&bytes.Buffer{}, &bytes.Buffer{}, []string{"-f", f.cfgPath, "-no-account-token", "acme"})
+		assert.ErrorContains(t, err, "applies only to user credentials")
+	})
+}
+
+func mustKey(t *testing.T, seed string) nkeys.KeyPair {
+	t.Helper()
+	kp, err := nkeys.FromSeed([]byte(seed))
+	require.NoError(t, err)
+	return kp
+}
+
 func TestCredsBearerUser(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv("VALISS_SEED_"+f.opPub, f.opSeed)

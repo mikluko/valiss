@@ -50,7 +50,10 @@ func (c *Credentials) AllowInsecure() *Credentials {
 }
 
 func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
-	md := map[string]string{token.HeaderToken: c.token}
+	md := map[string]string{}
+	if c.token != "" {
+		md[token.HeaderToken] = c.token
+	}
 	if c.userToken != "" {
 		md[token.HeaderUserToken] = c.userToken
 	}

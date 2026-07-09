@@ -122,6 +122,17 @@ the seed ships only inside the bundle. Minting a user credential embeds a
 freshly signed account token, so every mint yields a new account jti for the
 allowlist.
 
+With `-no-account-token` a user bundle carries only the user token and seed
+(NATS-resolver style): the operator seed is not needed at mint time, so an
+account holder can issue its users on its own. The server must then resolve
+account tokens itself, e.g. from static configuration:
+
+```go
+resolver, _ := token.StaticAccountTokens(acctTok1, acctTok2)
+verifier := token.NewVerifier(operatorPubKey, allowlist,
+    token.WithAccountTokenResolver(resolver))
+```
+
 An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
 
 ```yaml

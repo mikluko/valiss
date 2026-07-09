@@ -235,4 +235,30 @@ func TestUserChain(t *testing.T) {
 		resp.Body.Close()
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
+
+	t.Run("user-only bundle against a resolver-configured server", func(t *testing.T) {
+		resolver, err := token.StaticAccountTokens(acctTok)
+		require.NoError(t, err)
+		rmw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}, token.WithAccountTokenResolver(resolver)))
+		rsrv := httptest.NewServer(rmw(http.HandlerFunc(echoTenant)))
+		defer rsrv.Close()
+
+		lean := newClient(t, creds.Bundle{UserToken: userTok, Seed: userSeed})
+		resp, err := lean.Get(rsrv.URL)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "acme", string(body))
+
+		// Same bundle against a server without a resolver is rejected.
+		plain := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}))
+		psrv := httptest.NewServer(plain(http.HandlerFunc(echoTenant)))
+		defer psrv.Close()
+		resp, err = lean.Get(psrv.URL)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	})
 }

@@ -159,6 +159,17 @@ func (c *Claims) Authorizes(required string) bool {
 	return Covered(c.Scopes, required)
 }
 
+// IssuerOf returns the public key that signed a token, after checking the
+// token's own signature against it. It does not establish trust: the caller
+// must still verify the issuer's place in the chain.
+func IssuerOf(token string) (string, error) {
+	gc, err := jwt.DecodeGeneric(token)
+	if err != nil {
+		return "", fmt.Errorf("valiss: %w", err)
+	}
+	return gc.Issuer, nil
+}
+
 // Covered reports whether any granted scope covers the required scope,
 // honoring trailing-"*" prefix wildcards.
 func Covered(granted []string, required string) bool {

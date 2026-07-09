@@ -43,7 +43,9 @@ func NewTransport(b creds.Bundle, base http.RoundTripper) (*Transport, error) {
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// RoundTrippers must not mutate the caller's request.
 	req = req.Clone(req.Context())
-	req.Header.Set(token.HeaderToken, t.token)
+	if t.token != "" {
+		req.Header.Set(token.HeaderToken, t.token)
+	}
 	if t.userToken != "" {
 		req.Header.Set(token.HeaderUserToken, t.userToken)
 	}

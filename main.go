@@ -133,13 +133,14 @@ type tokenMeta struct {
 // credsMeta is the creds command's metadata output, written to stderr as
 // YAML so the bundle on stdout stays clean.
 type credsMeta struct {
-	Account tokenMeta  `yaml:"account"`
+	Account *tokenMeta `yaml:"account,omitempty"`
 	User    *tokenMeta `yaml:"user,omitempty"`
 }
 
 func cmdCreds(out, msg io.Writer, args []string) error {
 	fs := flag.NewFlagSet("creds", flag.ContinueOnError)
 	cfgPath := fs.String("f", "valiss.yaml", "token manifest file")
+	noAcctTok := fs.Bool("no-account-token", false, "omit the account token from a user bundle; the server must resolve it itself")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -150,6 +151,9 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if acctID == "" || (wantUser && userID == "") {
 		return fmt.Errorf("bad entity path %q: want ACCOUNT or ACCOUNT/USER", fs.Arg(0))
 	}
+	if *noAcctTok && !wantUser {
+		return errors.New("-no-account-token applies only to user credentials")
+	}
 
 	m, err := manifest.Load(*cfgPath)
 	if err != nil {
@@ -159,9 +163,14 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if err != nil {
 		return err
 	}
-	operator, err := seedFromEnv(m.Operator)
-	if err != nil {
-		return err
+
+	// The operator seed signs account tokens; a user bundle without an
+	// embedded account token needs only the account seed.
+	var operator nkeys.KeyPair
+	if !*noAcctTok {
+		if operator, err = seedFromEnv(m.Operator); err != nil {
+			return err
+		}
 	}
 
 	if !wantUser {
@@ -192,11 +201,13 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 		return err
 	}
 	fmt.Fprint(out, creds.Format(creds.Bundle{Token: tok, Seed: seed}))
-	return writeMeta(msg, credsMeta{Account: meta})
+	return writeMeta(msg, credsMeta{Account: &meta})
 }
 
-// mintUser writes a user-level bundle: a freshly signed account token, the
-// account-signed user token, and the user seed (absent for bearer users).
+// mintUser writes a user-level bundle: the account-signed user token, the
+// user seed (absent for bearer users), and, when operator is non-nil, a
+// freshly signed account token. A nil operator (-no-account-token) leaves
+// the account token out; the server resolves it by other means.
 func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account, userID string) error {
 	user, ok := acct.User(userID)
 	if !ok {
@@ -209,14 +220,21 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 	if err != nil {
 		return err
 	}
-	acctTok, acctMeta, err := mintToken(func() (string, error) {
-		return token.Issue(operator, acct.ID, acct.Key, acct.Scopes, acct.TTLOrDefault())
-	}, acct.ID, acct.Key, false)
-	if err != nil {
-		return err
-	}
 
-	bundle := creds.Bundle{Token: acctTok}
+	var (
+		bundle   creds.Bundle
+		acctMeta *tokenMeta
+	)
+	if operator != nil {
+		tok, meta, err := mintToken(func() (string, error) {
+			return token.Issue(operator, acct.ID, acct.Key, acct.Scopes, acct.TTLOrDefault())
+		}, acct.ID, acct.Key, false)
+		if err != nil {
+			return err
+		}
+		bundle.Token = tok
+		acctMeta = &meta
+	}
 	scopes := user.Scopes
 	var (
 		userPub   string

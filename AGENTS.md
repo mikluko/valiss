@@ -25,7 +25,7 @@ Per-request verification (`token.Verifier.VerifyCredential`, takes a `token.Cred
 
 1. **Account token**: operator-signed JWT embedding the account's public key (custom claims `tenant_key`, `scopes`), checked against the pinned operator key and expiry.
 2. **Allowlist**: the *account* token's jti must be in a server-side `token.Allowlist`; removal revokes before expiry. User tokens are not allowlisted — revocation is account-wide, user-level revocation relies on short TTLs.
-3. **User token** (optional chain): account-signed, verified against the account token's bound key. Effective scopes = user scopes clamped to the account's grants (`bearer` passes through unclamped: it selects an auth mode, not a grant).
+3. **User token** (optional chain): account-signed, verified against the account token's bound key. Effective scopes = user scopes clamped to the account's grants (`bearer` passes through unclamped: it selects an auth mode, not a grant). A request may carry only the user token (creds minted with `-no-account-token`); the server then resolves the account token via `WithAccountTokenResolver` (`StaticAccountTokens` helper), and the resolved token goes through the same checks.
 4. **Custom validators**: `WithClaimsValidator` hooks run here, after chain assembly and before the signature check, in registration order; first error rejects. This is the injection point for tenant-status lookups, audit, custom semantics.
 5. **Request signature**: the client signs an RFC3339Nano timestamp with its seed, verified against the effective bound key within a skew window (`token.DefaultSkew`, 2m). Tokens granting the `bearer` scope may skip it (replayable, token-only).
 

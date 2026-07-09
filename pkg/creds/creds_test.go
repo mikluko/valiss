@@ -34,6 +34,15 @@ func TestRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, b, got)
 	})
+
+	t.Run("user-only bundle has no account token section", func(t *testing.T) {
+		b := Bundle{UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
+		rendered := Format(b)
+		assert.NotContains(t, rendered, "BEGIN VALISS TOKEN")
+		got, err := Parse(rendered)
+		require.NoError(t, err)
+		assert.Equal(t, b, got)
+	})
 }
 
 func TestLoad(t *testing.T) {
@@ -48,7 +57,7 @@ func TestLoad(t *testing.T) {
 
 func TestParseMissingMarker(t *testing.T) {
 	_, err := Parse("no markers here")
-	assert.ErrorContains(t, err, "not found")
+	assert.ErrorContains(t, err, "no token markers")
 }
 
 func TestParseUnclosedSection(t *testing.T) {

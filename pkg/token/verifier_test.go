@@ -118,6 +118,63 @@ func TestClaimsValidator(t *testing.T) {
 	})
 }
 
+func TestAccountTokenResolver(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	account, accountPub := tenantKeys(t)
+	user, userPub := userKeys(t)
+
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	require.NoError(t, err)
+	userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Hour)
+	require.NoError(t, err)
+	ts, sig, err := SignRequest(user, time.Now())
+	require.NoError(t, err)
+
+	resolver, err := StaticAccountTokens(acctTok)
+	require.NoError(t, err)
+
+	t.Run("user-only credential resolves the account token", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{}, WithAccountTokenResolver(resolver))
+		claims, err := v.VerifyCredential(Credential{UserToken: userTok, Timestamp: ts, Signature: sig})
+		require.NoError(t, err)
+		assert.Equal(t, "acme", claims.TenantID)
+		assert.Equal(t, "alice", claims.UserID)
+	})
+
+	t.Run("no resolver rejects user-only credentials", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{})
+		_, err := v.VerifyCredential(Credential{UserToken: userTok, Timestamp: ts, Signature: sig})
+		assert.ErrorContains(t, err, "no account token resolver")
+	})
+
+	t.Run("unknown account rejected", func(t *testing.T) {
+		other, _ := tenantKeys(t)
+		foreignUserTok, err := IssueUser(other, "mallory", userPub, []string{"call:/svc/Get"}, time.Hour)
+		require.NoError(t, err)
+		v := NewVerifier(opPub, AllowAll{}, WithAccountTokenResolver(resolver))
+		_, err = v.VerifyCredential(Credential{UserToken: foreignUserTok, Timestamp: ts, Signature: sig})
+		assert.ErrorContains(t, err, "no account token configured")
+	})
+
+	t.Run("resolved token still passes the allowlist", func(t *testing.T) {
+		v := NewVerifier(opPub, NewStaticAllowlist("other"), WithAccountTokenResolver(resolver))
+		_, err := v.VerifyCredential(Credential{UserToken: userTok, Timestamp: ts, Signature: sig})
+		assert.ErrorContains(t, err, "not recognized")
+	})
+
+	t.Run("empty credential still rejected", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{}, WithAccountTokenResolver(resolver))
+		_, err := v.VerifyCredential(Credential{})
+		assert.ErrorContains(t, err, "missing tenant credential")
+	})
+
+	t.Run("tampered user token rejected before resolution", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{}, WithAccountTokenResolver(resolver))
+		_, err := v.VerifyCredential(Credential{UserToken: userTok[:len(userTok)-2] + "xx", Timestamp: ts, Signature: sig})
+		assert.Error(t, err)
+	})
+}
+
 func TestVerifyCredentialChain(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)

@@ -27,7 +27,9 @@ const (
 
 // Bundle is the parsed content of a creds file.
 type Bundle struct {
-	// Token is the operator-signed tenant token, present in every bundle.
+	// Token is the operator-signed tenant token. It may be absent in a
+	// user-level bundle minted with -no-account-token; the server then
+	// resolves the account token by other means (static configuration).
 	Token string
 	// UserToken is the account-signed user token; empty in account-level
 	// bundles.
@@ -41,9 +43,14 @@ type Bundle struct {
 // Format renders a creds file for the bundle.
 func Format(b Bundle) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s\n%s\n%s\n", tokenBegin, strings.TrimSpace(b.Token), tokenEnd)
+	if b.Token != "" {
+		fmt.Fprintf(&sb, "%s\n%s\n%s\n", tokenBegin, strings.TrimSpace(b.Token), tokenEnd)
+	}
 	if b.UserToken != "" {
-		fmt.Fprintf(&sb, "\n%s\n%s\n%s\n", userTokenBegin, strings.TrimSpace(b.UserToken), userTokenEnd)
+		if b.Token != "" {
+			sb.WriteString("\n")
+		}
+		fmt.Fprintf(&sb, "%s\n%s\n%s\n", userTokenBegin, strings.TrimSpace(b.UserToken), userTokenEnd)
 	}
 	if len(b.Seed) > 0 {
 		fmt.Fprintf(&sb, "\n%s\n%s\n%s\n", seedBegin, strings.TrimSpace(string(b.Seed)), seedEnd)
@@ -53,24 +60,26 @@ func Format(b Bundle) string {
 	return sb.String()
 }
 
-// Parse extracts the bundle from a creds file's contents. The tenant token is
-// required; the user token and seed sections are optional.
+// Parse extracts the bundle from a creds file's contents. Every section is
+// optional on its own, but at least one token must be present.
 func Parse(contents string) (Bundle, error) {
 	var b Bundle
 	tok, ok, err := between(contents, tokenBegin, tokenEnd)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("valiss: creds token: %w", err)
 	}
-	if !ok {
-		return Bundle{}, fmt.Errorf("valiss: creds token: marker %q not found", tokenBegin)
+	if ok {
+		b.Token = tok
 	}
-	b.Token = tok
 	userTok, ok, err := between(contents, userTokenBegin, userTokenEnd)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("valiss: creds user token: %w", err)
 	}
 	if ok {
 		b.UserToken = userTok
+	}
+	if b.Token == "" && b.UserToken == "" {
+		return Bundle{}, fmt.Errorf("valiss: creds: no token markers found")
 	}
 	seed, ok, err := between(contents, seedBegin, seedEnd)
 	if err != nil {

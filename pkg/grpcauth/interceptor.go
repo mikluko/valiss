@@ -64,7 +64,7 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 		Timestamp: first(md, token.HeaderTimestamp),
 		Signature: first(md, token.HeaderSignature),
 	}
-	if cred.Token == "" {
+	if cred.Token == "" && cred.UserToken == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing tenant credential")
 	}
 	claims, err := a.verifier.VerifyCredential(cred)

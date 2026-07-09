@@ -57,7 +57,7 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Timestamp: r.Header.Get(token.HeaderTimestamp),
 		Signature: r.Header.Get(token.HeaderSignature),
 	}
-	if cred.Token == "" {
+	if cred.Token == "" && cred.UserToken == "" {
 		http.Error(w, "missing tenant credential", http.StatusUnauthorized)
 		return
 	}
