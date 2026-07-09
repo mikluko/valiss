@@ -126,18 +126,18 @@ An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
 
 ```yaml
 # valiss.yaml — public data only, safe to commit
-- operator: ODZ6U...        # trust anchor; seed from VALISS_SEED_<this key>
-  accounts:
-    - id: acme
-      key: ABPZ7...          # account public key from `valiss keygen account`
-      scopes: ["call:/pkg.Svc/*"]
-      ttl: 720h              # optional, defaults to 720h
-      users:
-        - id: alice
-          key: UDGH3...      # user public key; seed stays with the user
-          scopes: ["call:/pkg.Svc/Get"]
-          ttl: 1h            # optional, defaults to 1h
-        - id: carol
-          bearer: true       # keyless token-only credential
-          scopes: ["call:/pkg.Svc/List"]
+operator: ODZ6U...          # trust anchor; seed from VALISS_SEED_<this key>
+accounts:
+  - id: acme
+    key: ABPZ7...            # account public key from `valiss keygen account`
+    scopes: ["call:/pkg.Svc/*"]
+    ttl: 720h                # optional, defaults to 720h
+    users:
+      - id: alice
+        key: UDGH3...        # user public key; seed stays with the user
+        scopes: ["call:/pkg.Svc/Get"]
+        ttl: 1h              # optional, defaults to 1h
+      - id: carol
+        bearer: true         # keyless token-only credential
+        scopes: ["call:/pkg.Svc/List"]
 ```

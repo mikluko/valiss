@@ -33,28 +33,27 @@ func TestLoad(t *testing.T) {
 	userPub := pubKey(t, nkeys.CreateUser)
 
 	m, err := Load(write(t, `
-- operator: `+opPub+`
-  accounts:
-    - id: acme
-      key: `+acctPub+`
-      scopes: ["call:/svc/*"]
-      ttl: 48h
-      users:
-        - id: alice
-          key: `+userPub+`
-          scopes: ["call:/svc/Get"]
-        - id: carol
-          bearer: true
-          scopes: ["call:/svc/Get"]
-    - id: globex
-      scopes: ["call:*"]
+operator: `+opPub+`
+accounts:
+  - id: acme
+    key: `+acctPub+`
+    scopes: ["call:/svc/*"]
+    ttl: 48h
+    users:
+      - id: alice
+        key: `+userPub+`
+        scopes: ["call:/svc/Get"]
+      - id: carol
+        bearer: true
+        scopes: ["call:/svc/Get"]
+  - id: globex
+    scopes: ["call:*"]
 `))
 	require.NoError(t, err)
-	require.Len(t, m, 1)
+	assert.Equal(t, opPub, m.Operator)
 
-	op, acct, err := m.FindAccount("acme")
+	acct, err := m.FindAccount("acme")
 	require.NoError(t, err)
-	assert.Equal(t, opPub, op.Operator)
 	assert.Equal(t, 48*time.Hour, acct.TTLOrDefault())
 
 	alice, ok := acct.User("alice")
@@ -67,12 +66,12 @@ func TestLoad(t *testing.T) {
 	assert.True(t, carol.Bearer)
 	assert.Empty(t, carol.Key)
 
-	_, globex, err := m.FindAccount("globex")
+	globex, err := m.FindAccount("globex")
 	require.NoError(t, err)
 	assert.Empty(t, globex.Key)
 	assert.Equal(t, DefaultAccountTTL, globex.TTLOrDefault())
 
-	_, _, err = m.FindAccount("initech")
+	_, err = m.FindAccount("initech")
 	assert.ErrorContains(t, err, "not found")
 }
 
@@ -88,87 +87,87 @@ func TestLoadRejects(t *testing.T) {
 	}{
 		{
 			name:    "empty document",
-			yaml:    "[]",
-			wantErr: "no operators",
+			yaml:    "{}",
+			wantErr: "operator public key",
 		},
 		{
 			name: "bad operator key",
 			yaml: `
-- operator: not-a-key
-  accounts: [{id: acme}]`,
+operator: not-a-key
+accounts: [{id: acme}]`,
 			wantErr: "operator public key",
 		},
 		{
 			name: "operator without accounts",
 			yaml: `
-- operator: ` + opPub,
+operator: ` + opPub,
 			wantErr: "no accounts",
 		},
 		{
 			name: "account without id",
 			yaml: `
-- operator: ` + opPub + `
-  accounts: [{scopes: ["call:*"]}]`,
+operator: ` + opPub + `
+accounts: [{scopes: ["call:*"]}]`,
 			wantErr: "id is required",
 		},
 		{
 			name: "duplicate account id",
 			yaml: `
-- operator: ` + opPub + `
-  accounts: [{id: acme}, {id: acme}]`,
+operator: ` + opPub + `
+accounts: [{id: acme}, {id: acme}]`,
 			wantErr: "duplicate account id",
 		},
 		{
 			name: "bad account key",
 			yaml: `
-- operator: ` + opPub + `
-  accounts: [{id: acme, key: ` + userPub + `}]`,
+operator: ` + opPub + `
+accounts: [{id: acme, key: ` + userPub + `}]`,
 			wantErr: "account public key",
 		},
 		{
 			name: "string scopes rejected",
 			yaml: `
-- operator: ` + opPub + `
-  accounts: [{id: acme, scopes: "call:*"}]`,
+operator: ` + opPub + `
+accounts: [{id: acme, scopes: "call:*"}]`,
 			wantErr: "parse",
 		},
 		{
 			name: "unknown field rejected",
 			yaml: `
-- operator: ` + opPub + `
-  accounts: [{id: acme, sopes: ["call:*"]}]`,
+operator: ` + opPub + `
+accounts: [{id: acme, sopes: ["call:*"]}]`,
 			wantErr: "parse",
 		},
 		{
 			name: "bearer and key mutually exclusive",
 			yaml: `
-- operator: ` + opPub + `
-  accounts:
-    - id: acme
-      key: ` + acctPub + `
-      scopes: ["call:*"]
-      users: [{id: alice, key: ` + userPub + `, bearer: true}]`,
+operator: ` + opPub + `
+accounts:
+  - id: acme
+    key: ` + acctPub + `
+    scopes: ["call:*"]
+    users: [{id: alice, key: ` + userPub + `, bearer: true}]`,
 			wantErr: "mutually exclusive",
 		},
 		{
 			name: "duplicate user id",
 			yaml: `
-- operator: ` + opPub + `
-  accounts:
-    - id: acme
-      scopes: ["call:*"]
-      users: [{id: alice, bearer: true}, {id: alice, bearer: true}]`,
+operator: ` + opPub + `
+accounts:
+  - id: acme
+    scopes: ["call:*"]
+    users: [{id: alice, bearer: true}, {id: alice, bearer: true}]`,
 			wantErr: "duplicate user id",
 		},
 		{
 			name: "user scope beyond the account scopes",
 			yaml: `
-- operator: ` + opPub + `
-  accounts:
-    - id: acme
-      key: ` + acctPub + `
-      scopes: ["call:/svc/*"]
-      users: [{id: alice, key: ` + userPub + `, scopes: ["call:/other/Get"]}]`,
+operator: ` + opPub + `
+accounts:
+  - id: acme
+    key: ` + acctPub + `
+    scopes: ["call:/svc/*"]
+    users: [{id: alice, key: ` + userPub + `, scopes: ["call:/other/Get"]}]`,
 			wantErr: "not covered",
 		},
 	}
@@ -180,15 +179,10 @@ func TestLoadRejects(t *testing.T) {
 	}
 }
 
-func TestFindAccountAmbiguous(t *testing.T) {
-	op1 := pubKey(t, nkeys.CreateOperator)
-	op2 := pubKey(t, nkeys.CreateOperator)
-	m, err := Load(write(t, `
-- operator: `+op1+`
-  accounts: [{id: acme}]
-- operator: `+op2+`
+func TestListDocumentRejected(t *testing.T) {
+	opPub := pubKey(t, nkeys.CreateOperator)
+	_, err := Load(write(t, `
+- operator: `+opPub+`
   accounts: [{id: acme}]`))
-	require.NoError(t, err)
-	_, _, err = m.FindAccount("acme")
-	assert.ErrorContains(t, err, "ambiguous")
+	assert.ErrorContains(t, err, "parse")
 }

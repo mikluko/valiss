@@ -77,28 +77,28 @@ func newFixture(t *testing.T) fixture {
 	f.userPub, f.userSeed = keygenPair(t, "user")
 	f.cfgPath = filepath.Join(t.TempDir(), "valiss.yaml")
 	require.NoError(t, os.WriteFile(f.cfgPath, []byte(`
-- operator: `+f.opPub+`
-  accounts:
-    - id: acme
-      key: `+f.acctPub+`
-      scopes: ["call:/pkg.Svc/*"]
-      ttl: 168h
-      users:
-        - id: alice
-          key: `+f.userPub+`
-          scopes: ["call:/pkg.Svc/Get"]
-        - id: bob
-          scopes: ["call:/pkg.Svc/Get"]
-          ttl: 30m
-        - id: carol
-          bearer: true
-          scopes: ["call:/pkg.Svc/Get"]
-    - id: globex
-      scopes: ["call:*"]
-      users:
-        - id: eve
-          bearer: true
-          scopes: ["call:*"]
+operator: `+f.opPub+`
+accounts:
+  - id: acme
+    key: `+f.acctPub+`
+    scopes: ["call:/pkg.Svc/*"]
+    ttl: 168h
+    users:
+      - id: alice
+        key: `+f.userPub+`
+        scopes: ["call:/pkg.Svc/Get"]
+      - id: bob
+        scopes: ["call:/pkg.Svc/Get"]
+        ttl: 30m
+      - id: carol
+        bearer: true
+        scopes: ["call:/pkg.Svc/Get"]
+  - id: globex
+    scopes: ["call:*"]
+    users:
+      - id: eve
+        bearer: true
+        scopes: ["call:*"]
 `), 0o600))
 	return f
 }

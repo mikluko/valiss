@@ -155,11 +155,11 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if err != nil {
 		return err
 	}
-	op, acct, err := m.FindAccount(acctID)
+	acct, err := m.FindAccount(acctID)
 	if err != nil {
 		return err
 	}
-	operator, err := seedFromEnv(op.Operator)
+	operator, err := seedFromEnv(m.Operator)
 	if err != nil {
 		return err
 	}

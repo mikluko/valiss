@@ -98,45 +98,27 @@ func (a Account) User(id string) (User, bool) {
 	return User{}, false
 }
 
-// Operator is one trust domain: an operator public key and the accounts it
-// issues.
-type Operator struct {
+// Manifest is the valiss.yaml document: one trust domain, an operator public
+// key and the accounts it issues.
+type Manifest struct {
 	// Operator is the operator's nkey public key: the trust anchor servers
 	// pin and the name of the VALISS_SEED_ variable holding the signing seed.
 	Operator string    `yaml:"operator"`
 	Accounts []Account `yaml:"accounts"`
 }
 
-// Manifest is the valiss.yaml document: a list of operator blocks.
-type Manifest []Operator
-
-// FindAccount resolves an account id across all operator blocks. It errors
-// when the id is absent or appears under more than one operator.
-func (m Manifest) FindAccount(id string) (Operator, Account, error) {
-	var (
-		found bool
-		op    Operator
-		acct  Account
-	)
-	for _, o := range m {
-		for _, a := range o.Accounts {
-			if a.ID != id {
-				continue
-			}
-			if found {
-				return Operator{}, Account{}, fmt.Errorf("account %q is ambiguous: defined under operators %s and %s", id, op.Operator, o.Operator)
-			}
-			found, op, acct = true, o, a
+// FindAccount resolves an account id.
+func (m *Manifest) FindAccount(id string) (Account, error) {
+	for _, a := range m.Accounts {
+		if a.ID == id {
+			return a, nil
 		}
 	}
-	if !found {
-		return Operator{}, Account{}, fmt.Errorf("account %q not found in the manifest", id)
-	}
-	return op, acct, nil
+	return Account{}, fmt.Errorf("account %q not found in the manifest", id)
 }
 
 // Load reads and validates a token manifest.
-func Load(path string) (Manifest, error) {
+func Load(path string) (*Manifest, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
@@ -147,31 +129,26 @@ func Load(path string) (Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if len(m) == 0 {
-		return nil, fmt.Errorf("%s: no operators defined", path)
+	if !nkeys.IsValidPublicOperatorKey(m.Operator) {
+		return nil, fmt.Errorf("%s: operator is not a valid operator public key (expected an O... nkey)", path)
 	}
-	for i, o := range m {
-		if !nkeys.IsValidPublicOperatorKey(o.Operator) {
-			return nil, fmt.Errorf("%s: operators[%d]: operator is not a valid operator public key (expected an O... nkey)", path, i)
+	if len(m.Accounts) == 0 {
+		return nil, fmt.Errorf("%s: no accounts defined", path)
+	}
+	seen := make(map[string]bool, len(m.Accounts))
+	for i, a := range m.Accounts {
+		if a.ID == "" {
+			return nil, fmt.Errorf("%s: accounts[%d]: id is required", path, i)
 		}
-		if len(o.Accounts) == 0 {
-			return nil, fmt.Errorf("%s: operator %s: no accounts defined", path, o.Operator)
+		if seen[a.ID] {
+			return nil, fmt.Errorf("%s: duplicate account id %q", path, a.ID)
 		}
-		seen := make(map[string]bool, len(o.Accounts))
-		for j, a := range o.Accounts {
-			if a.ID == "" {
-				return nil, fmt.Errorf("%s: operator %s: accounts[%d]: id is required", path, o.Operator, j)
-			}
-			if seen[a.ID] {
-				return nil, fmt.Errorf("%s: operator %s: duplicate account id %q", path, o.Operator, a.ID)
-			}
-			seen[a.ID] = true
-			if err := validateAccount(a); err != nil {
-				return nil, fmt.Errorf("%s: account %q: %w", path, a.ID, err)
-			}
+		seen[a.ID] = true
+		if err := validateAccount(a); err != nil {
+			return nil, fmt.Errorf("%s: account %q: %w", path, a.ID, err)
 		}
 	}
-	return m, nil
+	return &m, nil
 }
 
 func validateAccount(a Account) error {
