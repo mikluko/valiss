@@ -34,6 +34,12 @@ type Credential struct {
 	Signature string
 }
 
+// ClaimsValidator is custom validation logic injected into the Verifier. It
+// runs after the token chain is verified and the effective claims are
+// assembled, and before the request signature check. A non-nil error rejects
+// the request as unauthenticated.
+type ClaimsValidator func(cred Credential, claims *Claims) error
+
 // Verifier checks the full per-request credential: tenant token signature
 // against the pinned operator key, expiry, allowlist membership, the optional
 // user-token chain, and the request signature within the skew window.
@@ -45,6 +51,7 @@ type Verifier struct {
 	allowlist      Allowlist
 	skew           time.Duration
 	now            func() time.Time
+	validators     []ClaimsValidator
 }
 
 // VerifierOption configures a Verifier.
@@ -59,6 +66,12 @@ func WithSkew(d time.Duration) VerifierOption {
 // WithClock overrides the time source; for tests.
 func WithClock(now func() time.Time) VerifierOption {
 	return func(v *Verifier) { v.now = now }
+}
+
+// WithClaimsValidator injects custom validation into the verification
+// pipeline. Validators run in registration order; the first error wins.
+func WithClaimsValidator(fn ClaimsValidator) VerifierOption {
+	return func(v *Verifier) { v.validators = append(v.validators, fn) }
 }
 
 func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOption) *Verifier {
@@ -121,6 +134,11 @@ func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
 			ID:        claims.ID,
 			Issuer:    claims.Issuer,
 			ExpiresAt: minExpiry(claims.ExpiresAt, user.ExpiresAt),
+		}
+	}
+	for _, validate := range v.validators {
+		if err := validate(cred, claims); err != nil {
+			return nil, err
 		}
 	}
 	if cred.Timestamp == "" && cred.Signature == "" {

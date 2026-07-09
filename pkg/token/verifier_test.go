@@ -1,6 +1,7 @@
 package token
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -52,6 +53,68 @@ func TestVerifyCredentialBearer(t *testing.T) {
 		require.NoError(t, err)
 		_, err = v.VerifyCredential(Credential{Token: callAll})
 		assert.ErrorContains(t, err, "bearer scope")
+	})
+}
+
+func TestClaimsValidator(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	account, accountPub := tenantKeys(t)
+	user, userPub := userKeys(t)
+
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	require.NoError(t, err)
+	acctTS, acctSig, err := SignRequest(account, time.Now())
+	require.NoError(t, err)
+
+	t.Run("validator sees the effective claims", func(t *testing.T) {
+		userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Hour)
+		require.NoError(t, err)
+		ts, sig, err := SignRequest(user, time.Now())
+		require.NoError(t, err)
+
+		var seen *Claims
+		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(func(_ Credential, c *Claims) error {
+			seen = c
+			return nil
+		}))
+		_, err = v.VerifyCredential(Credential{Token: acctTok, UserToken: userTok, Timestamp: ts, Signature: sig})
+		require.NoError(t, err)
+		require.NotNil(t, seen)
+		assert.Equal(t, "acme", seen.TenantID)
+		assert.Equal(t, "alice", seen.UserID, "validator runs after chain assembly")
+	})
+
+	t.Run("validator error rejects the request", func(t *testing.T) {
+		banned := errors.New("tenant suspended")
+		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(func(_ Credential, c *Claims) error {
+			if c.TenantID == "acme" {
+				return banned
+			}
+			return nil
+		}))
+		_, err := v.VerifyCredential(Credential{Token: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorIs(t, err, banned)
+	})
+
+	t.Run("validators run in order, first error wins", func(t *testing.T) {
+		first := errors.New("first")
+		var secondRan bool
+		v := NewVerifier(opPub, AllowAll{},
+			WithClaimsValidator(func(Credential, *Claims) error { return first }),
+			WithClaimsValidator(func(Credential, *Claims) error { secondRan = true; return nil }),
+		)
+		_, err := v.VerifyCredential(Credential{Token: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorIs(t, err, first)
+		assert.False(t, secondRan)
+	})
+
+	t.Run("validator runs before the bearer gate", func(t *testing.T) {
+		// A rejected bearer request reports the validator's error, not the
+		// missing-signature one.
+		custom := errors.New("nope")
+		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(func(Credential, *Claims) error { return custom }))
+		_, err := v.VerifyCredential(Credential{Token: acctTok})
+		assert.ErrorIs(t, err, custom)
 	})
 }
 
