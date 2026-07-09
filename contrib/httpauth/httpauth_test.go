@@ -69,7 +69,8 @@ func TestMiddlewareTransport(t *testing.T) {
 	tok, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
-	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
+	// Authentication is the focus here; extension enforcement is off.
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}), AllowMissingExtension())
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
@@ -153,6 +154,37 @@ func TestExtEnforcement(t *testing.T) {
 		resp.Body.Close()
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode, "user extension cannot escape the account extension")
 	})
+
+	t.Run("token without extension denied by default", func(t *testing.T) {
+		open, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		resp, err := newClient(t, creds.Creds{AccountToken: open, Seed: seed}).Get(srv.URL + "/v1/checks")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+		assert.Contains(t, string(body), "no http extension")
+	})
+
+	t.Run("zero-value extension grants nothing", func(t *testing.T) {
+		none, err := valiss.Issue(op, "acme", tenantPub,
+			valiss.WithExtension(Ext{}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		resp, err := newClient(t, creds.Creds{AccountToken: none, Seed: seed}).Get(srv.URL + "/v1/checks")
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("wildcard path grants everything explicitly", func(t *testing.T) {
+		all, err := valiss.Issue(op, "acme", tenantPub,
+			valiss.WithExtension(Ext{Paths: []string{"*"}}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		resp, err := newClient(t, creds.Creds{AccountToken: all, Seed: seed}).Get(srv.URL + "/anything")
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
 }
 
 func TestBearerTransport(t *testing.T) {
@@ -162,7 +194,7 @@ func TestBearerTransport(t *testing.T) {
 
 	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}), AllowMissingExtension())
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
@@ -198,12 +230,12 @@ func TestMiddlewareRejections(t *testing.T) {
 	claims, err := valiss.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
 
-	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist(claims.ID)))
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist(claims.ID)), AllowMissingExtension())
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
 	t.Run("token not in allowlist", func(t *testing.T) {
-		strict := NewMiddleware(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist("other")))
+		strict := NewMiddleware(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist("other")), AllowMissingExtension())
 		srv2 := httptest.NewServer(strict(http.HandlerFunc(echoTenant)))
 		defer srv2.Close()
 		resp, err := newClient(t, creds.Creds{AccountToken: tok, Seed: seed}).Get(srv2.URL)
@@ -247,12 +279,14 @@ func TestUserChain(t *testing.T) {
 	account, accountPub, _ := tenantKeys(t)
 	_, userPub, userSeed := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub,
+		valiss.WithExtension(Ext{Paths: []string{"/v1/*"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	userTok, err := valiss.IssueUser(account, "alice", userPub,
 		valiss.WithExtension(Ext{Paths: []string{"/v1/checks"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
+	// Strict default: both chain levels carry the extension.
 	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id, ok := valiss.IdentityFromContext(r.Context())

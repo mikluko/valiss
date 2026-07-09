@@ -42,7 +42,12 @@ func main() {
 	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := valiss.Issue(operator, "acme", accountPub, valiss.WithTTL(time.Hour))
+	// Enforcement is fail-closed: every token must carry the gRPC extension,
+	// and allow-all is the explicit wildcard.
+	tok, err := valiss.Issue(operator, "acme", accountPub,
+		valiss.WithExtension(grpcauth.Ext{Methods: []string{"*"}}),
+		valiss.WithTTL(time.Hour),
+	)
 	check(err)
 	claims, err := valiss.VerifyAccount(tok, operatorPub)
 	check(err)
@@ -63,9 +68,9 @@ func main() {
 	defer srv.Stop()
 
 	// Client side, account level: per-RPC credentials sign every call with
-	// the account seed. The account token carries no gRPC extension, so
-	// every method is open to it. AllowInsecure only because the in-memory
-	// pipe has no TLS.
+	// the account seed. The account token's wildcard extension opens every
+	// method to it. AllowInsecure only because the in-memory pipe has no
+	// TLS.
 	conn := dial(lis, creds.Creds{AccountToken: tok, Seed: accountSeed})
 	defer conn.Close()
 

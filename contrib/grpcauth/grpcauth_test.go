@@ -91,10 +91,38 @@ func TestExtEnforcement(t *testing.T) {
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	})
 
-	t.Run("token without extension is unconstrained", func(t *testing.T) {
+	t.Run("token without extension denied by default", func(t *testing.T) {
 		open, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: open, Timestamp: ts, Signature: sig}), nil,
+			unaryInfo("/anything/Method"), handler)
+		assert.Equal(t, codes.PermissionDenied, status.Code(err))
+		assert.Contains(t, status.Convert(err).Message(), "no grpc extension")
+	})
+
+	t.Run("token without extension passes with AllowMissingExtension", func(t *testing.T) {
+		open, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		lax := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}, clock), AllowMissingExtension())
+		_, err = lax.UnaryInterceptor()(authContext(valiss.Request{AccountToken: open, Timestamp: ts, Signature: sig}), nil,
+			unaryInfo("/anything/Method"), handler)
+		assert.NoError(t, err)
+	})
+
+	t.Run("empty Methods grants nothing", func(t *testing.T) {
+		none, err := valiss.Issue(op, "acme", tenantPub,
+			valiss.WithExtension(Ext{}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: none, Timestamp: ts, Signature: sig}), nil,
+			unaryInfo("/anything/Method"), handler)
+		assert.Equal(t, codes.PermissionDenied, status.Code(err))
+	})
+
+	t.Run("wildcard grants everything explicitly", func(t *testing.T) {
+		all, err := valiss.Issue(op, "acme", tenantPub,
+			valiss.WithExtension(Ext{Methods: []string{"*"}}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: all, Timestamp: ts, Signature: sig}), nil,
 			unaryInfo("/anything/Method"), handler)
 		assert.NoError(t, err)
 	})
@@ -110,7 +138,8 @@ func TestAuthenticate(t *testing.T) {
 
 	now := time.Now()
 	clock := valiss.WithClock(func() time.Time { return now })
-	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist(claims.ID), clock))
+	// Authentication is the focus here; extension enforcement is off.
+	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist(claims.ID), clock), AllowMissingExtension())
 
 	ts, sig, err := valiss.SignRequest(tenant, now)
 	require.NoError(t, err)
@@ -142,7 +171,7 @@ func TestAuthenticate(t *testing.T) {
 	})
 
 	t.Run("token not in allowlist", func(t *testing.T) {
-		strict := NewAuthenticator(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist("other"), clock))
+		strict := NewAuthenticator(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist("other"), clock), AllowMissingExtension())
 		_, err := strict.UnaryInterceptor()(authContext(valiss.Request{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
 			func(context.Context, any) (any, error) { return nil, nil })
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
@@ -168,7 +197,7 @@ func TestCredentials(t *testing.T) {
 	md, err := c.GetRequestMetadata(context.Background())
 	require.NoError(t, err)
 
-	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}))
+	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}), AllowMissingExtension())
 	ctx := authContext(valiss.Request{AccountToken: md[valiss.HeaderAccountToken], Timestamp: md[valiss.HeaderTimestamp], Signature: md[valiss.HeaderSignature]})
 	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 		func(ctx context.Context, _ any) (any, error) {
@@ -188,7 +217,7 @@ func TestBearerCredentials(t *testing.T) {
 
 	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}))
+	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}), AllowMissingExtension())
 	handler := func(context.Context, any) (any, error) { return nil, nil }
 
 	t.Run("bearer user token allows token-only call", func(t *testing.T) {
@@ -248,6 +277,7 @@ func TestUserChain(t *testing.T) {
 	md, err := c.GetRequestMetadata(context.Background())
 	require.NoError(t, err)
 
+	// Strict default: both chain levels carry the extension.
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	ctx := authContext(valiss.Request{
 		AccountToken: md[valiss.HeaderAccountToken],

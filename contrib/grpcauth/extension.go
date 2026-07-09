@@ -7,28 +7,36 @@ import (
 )
 
 // Ext is the gRPC transport extension claim: it binds a token to specific
-// methods. An empty list leaves the token unconstrained. Mint it with
-// valiss.WithExtension(Ext{...}). The interceptors enforce every present
-// extension on both chain levels, so an account-level extension bounds all
-// of the account's users on top of their own.
+// methods. Mint it with valiss.WithExtension(Ext{...}).
+//
+// Enforcement is fail-closed: every token in the chain must carry the
+// extension (unless the Authenticator was built with
+// AllowMissingExtension), an empty Methods list grants nothing, and
+// allow-all is the explicit wildcard Methods: []string{"*"}. Extensions on
+// both chain levels are enforced (AND), so an account-level extension
+// bounds all of the account's users on top of their own.
 type Ext struct {
 	// Methods allowed, as gRPC full method names, e.g.
 	// "/example.v1.WidgetService/CreateWidget". A trailing "*" is a prefix
-	// wildcard, so "/example.v1.WidgetService/*" covers the whole service.
+	// wildcard: "/example.v1.WidgetService/*" covers the whole service and
+	// "*" covers everything. Empty grants nothing.
 	Methods []string `json:"methods,omitempty"`
 }
 
 // ExtensionName names the claim in the token's ext field.
 func (Ext) ExtensionName() string { return "grpc" }
 
-// Authorizes reports whether the extension permits the full method.
+// Authorizes reports whether the extension permits the full method. An
+// empty Methods list permits nothing.
 func (e Ext) Authorizes(fullMethod string) bool {
-	return len(e.Methods) == 0 || valiss.Covered(e.Methods, fullMethod)
+	return valiss.Covered(e.Methods, fullMethod)
 }
 
 // authorizeExt enforces the gRPC extensions a verified request's tokens
-// carry. Tokens without the extension impose no constraint.
-func authorizeExt(id *valiss.Identity, fullMethod string) error {
+// carry. Every token in the chain must carry the extension and permit the
+// method; with allowMissing, tokens without the extension impose no
+// constraint instead.
+func authorizeExt(id *valiss.Identity, fullMethod string, allowMissing bool) error {
 	exts := []valiss.Extensions{id.Account.Ext}
 	if id.User != nil {
 		exts = append(exts, id.User.Ext)
@@ -39,7 +47,10 @@ func authorizeExt(id *valiss.Identity, fullMethod string) error {
 			return err
 		}
 		if !ok {
-			continue
+			if allowMissing {
+				continue
+			}
+			return fmt.Errorf("valiss: token carries no grpc extension")
 		}
 		if !ext.Authorizes(fullMethod) {
 			return fmt.Errorf("valiss: token does not permit %s", fullMethod)

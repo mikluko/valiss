@@ -12,17 +12,34 @@ import (
 )
 
 type middleware struct {
-	verifier *valiss.Verifier
-	next     http.Handler
+	verifier     *valiss.Verifier
+	allowMissing bool
+	next         http.Handler
+}
+
+// Option configures the middleware.
+type Option func(*middleware)
+
+// AllowMissingExtension accepts tokens that carry no HTTP extension,
+// imposing no constraint on them. Without it every token in the chain must
+// carry the extension. Use only when authorization is handled entirely
+// outside the transport.
+func AllowMissingExtension() Option {
+	return func(m *middleware) { m.allowMissing = true }
 }
 
 // NewMiddleware returns a middleware that authenticates every request
-// against the verifier and enforces the tokens' HTTP extensions.
-// Unauthenticated requests get 401, requests outside an extension's bounds
-// get 403.
-func NewMiddleware(verifier *valiss.Verifier) func(http.Handler) http.Handler {
+// against the verifier and enforces the tokens' HTTP extensions,
+// fail-closed: tokens without the extension are denied unless
+// AllowMissingExtension is set. Unauthenticated requests get 401, requests
+// outside an extension's bounds get 403.
+func NewMiddleware(verifier *valiss.Verifier, opts ...Option) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return &middleware{verifier: verifier, next: next}
+		m := &middleware{verifier: verifier, next: next}
+		for _, opt := range opts {
+			opt(m)
+		}
+		return m
 	}
 }
 
@@ -42,7 +59,7 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	if err := authorizeExt(id, r); err != nil {
+	if err := authorizeExt(id, r, m.allowMissing); err != nil {
 		http.Error(w, err.Error(), http.StatusForbidden)
 		return
 	}

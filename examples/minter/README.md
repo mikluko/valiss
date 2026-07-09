@@ -51,6 +51,9 @@ in a secrets manager as `VALISS_SEED_<PUBLIC-KEY>` environment variables.
 
    The minter mints plain identity tokens; authorization rides typed
    extension claims, a programmatic-issuance feature (`valiss.WithExtension`).
+   Note that the contrib transports enforce extensions fail-closed, so
+   minter-minted tokens are rejected there unless the server opts out via
+   `AllowMissingExtension()`.
 
 3. Mint credentials. The creds file goes to stdout; metadata — including
    the account token `jti` your server-side allowlist must accept — goes to

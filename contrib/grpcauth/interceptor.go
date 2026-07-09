@@ -17,13 +17,30 @@ import (
 )
 
 // Authenticator verifies the per-request tenant credential and enforces the
-// tokens' gRPC extensions.
+// tokens' gRPC extensions, fail-closed: tokens without the extension are
+// denied unless AllowMissingExtension is set.
 type Authenticator struct {
-	verifier *valiss.Verifier
+	verifier     *valiss.Verifier
+	allowMissing bool
 }
 
-func NewAuthenticator(verifier *valiss.Verifier) *Authenticator {
-	return &Authenticator{verifier: verifier}
+// Option configures an Authenticator.
+type Option func(*Authenticator)
+
+// AllowMissingExtension accepts tokens that carry no gRPC extension,
+// imposing no method constraint on them. Without it every token in the
+// chain must carry the extension. Use only when authorization is handled
+// entirely outside the transport.
+func AllowMissingExtension() Option {
+	return func(a *Authenticator) { a.allowMissing = true }
+}
+
+func NewAuthenticator(verifier *valiss.Verifier, opts ...Option) *Authenticator {
+	a := &Authenticator{verifier: verifier}
+	for _, opt := range opts {
+		opt(a)
+	}
+	return a
 }
 
 // authenticate verifies the credential and authorizes the method, returning
@@ -46,7 +63,7 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
-	if err := authorizeExt(id, fullMethod); err != nil {
+	if err := authorizeExt(id, fullMethod, a.allowMissing); err != nil {
 		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 	return valiss.ContextWithIdentity(ctx, id), nil

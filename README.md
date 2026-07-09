@@ -53,8 +53,13 @@ authorization is built on this mechanism:
 - `contrib/grpcauth` defines `Ext{Methods}` (name `grpc`): the interceptors
   reject methods outside the extension with PermissionDenied.
 
-Extensions present on both chain levels are both enforced, so an
-account-level extension bounds every user of the account.
+Transport enforcement is fail-closed: every token in the chain must carry
+the transport extension, an empty grant list grants nothing, and allow-all
+is the explicit wildcard (`Methods: ["*"]`, `Paths: ["*"]`). Deployments
+that authorize entirely outside the transport can opt out with
+`AllowMissingExtension()` on the authenticator/middleware. Extensions
+present on both chain levels are both enforced, so an account-level
+extension bounds every user of the account.
 
 Domain claims work the same way. Define the type, mint it into the token,
 recover it in the handler:
