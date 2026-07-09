@@ -11,14 +11,15 @@
 #
 #   export VALISS_SEED_ODPRLS...=SOAIRX...   # operator seed, signs account tokens
 #   export VALISS_SEED_AC4BYR...=SAAKP6...   # account seed, signs its users' tokens
-#   valiss creds acme          > acme.creds        # account-level bundle
-#   valiss creds acme/alice    > alice.creds       # user-level bundle
+#   valiss creds acme          > acme.creds        # account-level creds
+#   valiss creds acme/alice    > alice.creds       # user-level creds
+#   valiss creds -bundle acme/alice > alice.creds  # bundle: + account token
 #
-# The bundle goes to stdout; metadata goes to stderr as YAML, including the
+# The creds go to stdout; metadata goes to stderr as YAML, including the
 # account token jti the server-side allowlist must accept.
 #
 # Entries without a `key` get a fresh key pair generated per invocation; the
-# seed ships only inside the bundle. Entries with a `key` require the
+# seed ships only inside the creds. Entries with a `key` require the
 # matching VALISS_SEED_<key> at mint time.
 #
 # The keys below are throwaway examples; minting against them fails unless
@@ -44,7 +45,7 @@ accounts:
           - call:/example.v1.WidgetService/GetWidget
         ttl: 1h
       # No key: a fresh pair is generated on every `valiss creds acme/bob`,
-      # and the seed ships inside the bundle.
+      # and the seed ships inside the creds.
       - id: bob
         scopes:
           - call:/example.v1.WidgetService/GetWidget

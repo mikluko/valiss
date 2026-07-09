@@ -142,7 +142,7 @@ func TestCredentials(t *testing.T) {
 	tok, err := token.Issue(op, "acme", tenantPub, nil, time.Hour)
 	require.NoError(t, err)
 
-	c, err := NewCredentials(creds.Bundle{Token: tok, Seed: seed})
+	c, err := NewCredentials(creds.Creds{Token: tok, Seed: seed})
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(context.Background())
 	require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestBearerCredentials(t *testing.T) {
 	t.Run("bearer scope allows token-only call", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
 		require.NoError(t, err)
-		c, err := NewCredentials(creds.Bundle{Token: tok})
+		c, err := NewCredentials(creds.Creds{Token: tok})
 		require.NoError(t, err)
 		md, err := c.GetRequestMetadata(context.Background())
 		require.NoError(t, err)
@@ -187,17 +187,17 @@ func TestBearerCredentials(t *testing.T) {
 	})
 }
 
-// TestCredsEndToEnd proves a parsed creds bundle authenticates a request.
+// TestCredsEndToEnd proves parsed creds authenticate a request.
 func TestCredsEndToEnd(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
 	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
 	require.NoError(t, err)
 
-	bundle, err := creds.Parse(creds.Format(creds.Bundle{Token: tok, Seed: seed}))
+	parsed, err := creds.Parse(creds.Format(creds.Creds{Token: tok, Seed: seed}))
 	require.NoError(t, err)
 
-	c, err := NewCredentials(bundle)
+	c, err := NewCredentials(parsed)
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(t.Context())
 	require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestCredsEndToEnd(t *testing.T) {
 	assert.NoError(t, token.VerifyRequest(claims.PubKey, md[token.HeaderTimestamp], md[token.HeaderSignature], time.Now(), token.DefaultSkew))
 }
 
-// TestUserChain proves a user-level bundle authenticates through the
+// TestUserChain proves user-level creds authenticate through the
 // interceptor with the delegated identity.
 func TestUserChain(t *testing.T) {
 	op, opPub := issuerKeys(t)
@@ -223,7 +223,7 @@ func TestUserChain(t *testing.T) {
 	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/svc/M"}, time.Hour)
 	require.NoError(t, err)
 
-	c, err := NewCredentials(creds.Bundle{Token: acctTok, UserToken: userTok, Seed: userSeed})
+	c, err := NewCredentials(creds.Creds{Token: acctTok, UserToken: userTok, Seed: userSeed})
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(context.Background())
 	require.NoError(t, err)

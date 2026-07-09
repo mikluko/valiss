@@ -12,10 +12,10 @@ import (
 	"github.com/mikluko/valiss/pkg/token"
 )
 
-// Credentials is a grpc.PerRPCCredentials that attaches the credential
-// bundle's tokens and, when the bundle holds a seed, a fresh per-call
-// signature. Bundles without a seed are bearer credentials: the server
-// accepts them only when the effective token grants token.ScopeBearer. Use
+// Credentials is a grpc.PerRPCCredentials that attaches the creds' tokens
+// and, when the creds hold a seed, a fresh per-call signature. Creds
+// without a seed are bearer credentials: the server accepts them only when
+// the effective token grants token.ScopeBearer. Use
 // grpc.WithPerRPCCredentials on the client.
 type Credentials struct {
 	token     string
@@ -27,10 +27,10 @@ type Credentials struct {
 	requireTLS bool
 }
 
-// NewCredentials builds client credentials from a creds bundle: the tenant
-// token, the optional user token, and the seed matching the effective
-// token's bound key (nil for bearer bundles).
-func NewCredentials(b creds.Bundle) (*Credentials, error) {
+// NewCredentials builds client credentials from parsed creds: the tokens
+// they carry and the seed matching the effective token's bound key (nil
+// for bearer creds).
+func NewCredentials(b creds.Creds) (*Credentials, error) {
 	c := &Credentials{token: b.Token, userToken: b.UserToken, now: time.Now, requireTLS: true}
 	if len(b.Seed) > 0 {
 		subject, err := nkeys.FromSeed(b.Seed)

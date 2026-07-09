@@ -6,15 +6,17 @@
 //	valiss keygen operator            # one-time: operator key pair (trust anchor)
 //	valiss keygen account             # per-tenant key pair
 //	valiss keygen user                # per-end-user key pair
-//	valiss creds ACCOUNT[/USER]       # mint a credential bundle for one entity
+//	valiss creds ACCOUNT[/USER]       # mint credentials for one entity
 //
 // creds reads a token manifest (valiss.yaml in the working directory,
 // override with -f) declaring the credential tree, resolves every required
 // seed from VALISS_SEED_<PUBKEY> environment variables (failing when one is
-// missing), and writes the credential bundle to stdout and its metadata --
+// missing), and writes the credentials to stdout and their metadata --
 // including the jti the server-side allowlist accepts -- to stderr as YAML.
+// User creds carry only the user token; -bundle additionally embeds a fresh
+// account token for servers that do not resolve account tokens themselves.
 // Manifest entries without a key get a fresh key pair generated per
-// invocation; the seed ships inside the bundle and is never stored.
+// invocation; the seed ships inside the creds and is never stored.
 package main
 
 import (
@@ -64,10 +66,10 @@ commands:
   keygen operator    generate the operator key pair (server trust anchor)
   keygen account     generate an account (tenant) key pair
   keygen user        generate a user key pair
-  creds ACCOUNT[/USER]  mint a credential bundle for a manifest entry:
-                     bundle to stdout, metadata (allowlist jti) to stderr
+  creds ACCOUNT[/USER]  mint credentials for a manifest entry:
+                     creds to stdout, metadata (allowlist jti) to stderr
       -f FILE          token manifest (default valiss.yaml)
-      -with-account-token  embed a fresh account token in a user bundle
+      -bundle          also embed a fresh account token in user creds
 
 Seeds are never stored: keygen prints them once, preserve them securely.
 creds resolves signing seeds from VALISS_SEED_<PUBKEY> environment variables.
@@ -122,7 +124,7 @@ type tokenMeta struct {
 	// Key is the entity's nkey public key; absent on bearer entries.
 	Key string `yaml:"key,omitempty"`
 	// Generated marks a key pair created by this invocation; its seed ships
-	// only inside the bundle.
+	// only inside the creds.
 	Generated bool `yaml:"generated,omitempty"`
 	// JTI is the token id; the account jti is what the server-side allowlist
 	// accepts.
@@ -132,7 +134,7 @@ type tokenMeta struct {
 }
 
 // credsMeta is the creds command's metadata output, written to stderr as
-// YAML so the bundle on stdout stays clean.
+// YAML so the creds on stdout stay clean.
 type credsMeta struct {
 	Account *tokenMeta `yaml:"account,omitempty"`
 	User    *tokenMeta `yaml:"user,omitempty"`
@@ -141,7 +143,7 @@ type credsMeta struct {
 func cmdCreds(out, msg io.Writer, args []string) error {
 	fs := flag.NewFlagSet("creds", flag.ContinueOnError)
 	cfgPath := fs.String("f", "valiss.yaml", "token manifest file")
-	withAcctTok := fs.Bool("with-account-token", false, "embed a freshly minted account token in a user bundle, for servers that do not resolve account tokens themselves")
+	asBundle := fs.Bool("bundle", false, "embed a freshly minted account token in user creds, for servers that do not resolve account tokens themselves")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -152,8 +154,8 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if acctID == "" || (wantUser && userID == "") {
 		return fmt.Errorf("bad entity path %q: want ACCOUNT or ACCOUNT/USER", fs.Arg(0))
 	}
-	if *withAcctTok && !wantUser {
-		return errors.New("-with-account-token applies only to user credentials")
+	if *asBundle && !wantUser {
+		return errors.New("-bundle applies only to user credentials")
 	}
 
 	m, err := manifest.Load(*cfgPath)
@@ -165,10 +167,10 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 		return err
 	}
 
-	// The operator seed signs account tokens; a plain user bundle carries
-	// only the user token and needs just the account seed.
+	// The operator seed signs account tokens; plain user creds carry
+	// only the user token and need just the account seed.
 	var operator nkeys.KeyPair
-	if !wantUser || *withAcctTok {
+	if !wantUser || *asBundle {
 		if operator, err = seedFromEnv(m.Operator); err != nil {
 			return err
 		}
@@ -180,7 +182,7 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	return mintUser(out, msg, operator, acct, userID)
 }
 
-// mintAccount writes an account-level bundle: the operator-signed account
+// mintAccount writes account-level creds: the operator-signed account
 // token plus the account seed.
 func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account) error {
 	subject, generated, err := subjectKey(acct.Key, nkeys.CreateAccount)
@@ -201,13 +203,13 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, creds.Format(creds.Bundle{Token: tok, Seed: seed}))
+	fmt.Fprint(out, creds.Format(creds.Creds{Token: tok, Seed: seed}))
 	return writeMeta(msg, credsMeta{Account: &meta})
 }
 
-// mintUser writes a user-level bundle: the account-signed user token, the
-// user seed (absent for bearer users), and, when operator is non-nil
-// (-with-account-token), a freshly signed account token. Without it the
+// mintUser writes user-level creds: the account-signed user token and the
+// user seed (absent for bearer users). With a non-nil operator (-bundle)
+// the creds also embed a freshly signed account token; without it the
 // server resolves the account token by other means.
 func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account, userID string) error {
 	user, ok := acct.User(userID)
@@ -223,7 +225,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 	}
 
 	var (
-		bundle   creds.Bundle
+		bundle   creds.Creds
 		acctMeta *tokenMeta
 	)
 	if operator != nil {

@@ -45,7 +45,7 @@ func echoTenant(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, claims.TenantID)
 }
 
-func newClient(t *testing.T, b creds.Bundle) *http.Client {
+func newClient(t *testing.T, b creds.Creds) *http.Client {
 	t.Helper()
 	transport, err := NewTransport(b, nil)
 	require.NoError(t, err)
@@ -62,7 +62,7 @@ func TestMiddlewareTransport(t *testing.T) {
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	client := newClient(t, creds.Bundle{Token: tok, Seed: seed})
+	client := newClient(t, creds.Creds{Token: tok, Seed: seed})
 
 	t.Run("authenticated request reaches handler with tenant", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -92,7 +92,7 @@ func TestMiddlewareScope(t *testing.T) {
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	client := newClient(t, creds.Bundle{Token: tok, Seed: seed})
+	client := newClient(t, creds.Creds{Token: tok, Seed: seed})
 
 	t.Run("granted path allowed", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -119,7 +119,7 @@ func TestBearerTransport(t *testing.T) {
 	t.Run("bearer scope allows token-only request", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
 		require.NoError(t, err)
-		client := newClient(t, creds.Bundle{Token: tok})
+		client := newClient(t, creds.Creds{Token: tok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -132,7 +132,7 @@ func TestBearerTransport(t *testing.T) {
 	t.Run("no bearer scope denies token-only request", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
 		require.NoError(t, err)
-		client := newClient(t, creds.Bundle{Token: tok})
+		client := newClient(t, creds.Creds{Token: tok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -158,7 +158,7 @@ func TestMiddlewareRejections(t *testing.T) {
 		strict := NewMiddleware(token.NewVerifier(opPub, token.NewStaticAllowlist("other")))
 		srv2 := httptest.NewServer(strict(http.HandlerFunc(echoTenant)))
 		defer srv2.Close()
-		resp, err := newClient(t, creds.Bundle{Token: tok, Seed: seed}).Get(srv2.URL)
+		resp, err := newClient(t, creds.Creds{Token: tok, Seed: seed}).Get(srv2.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
@@ -181,7 +181,7 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 
 	t.Run("transport does not mutate caller request", func(t *testing.T) {
-		transport, err := NewTransport(creds.Bundle{Token: tok, Seed: seed}, nil)
+		transport, err := NewTransport(creds.Creds{Token: tok, Seed: seed}, nil)
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
@@ -192,7 +192,7 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 }
 
-// TestUserChain proves a user-level bundle authenticates through the
+// TestUserChain proves user-level creds authenticate through the
 // middleware with the delegated identity.
 func TestUserChain(t *testing.T) {
 	op, opPub := issuerKeys(t)
@@ -217,7 +217,7 @@ func TestUserChain(t *testing.T) {
 	})))
 	defer srv.Close()
 
-	client := newClient(t, creds.Bundle{Token: acctTok, UserToken: userTok, Seed: userSeed})
+	client := newClient(t, creds.Creds{Token: acctTok, UserToken: userTok, Seed: userSeed})
 
 	t.Run("delegated path allowed with user identity", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -236,14 +236,14 @@ func TestUserChain(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 	})
 
-	t.Run("user-only bundle against a resolver-configured server", func(t *testing.T) {
+	t.Run("user-only creds against a resolver-configured server", func(t *testing.T) {
 		resolver, err := token.StaticAccountTokens(acctTok)
 		require.NoError(t, err)
 		rmw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}, token.WithAccountTokenResolver(resolver)))
 		rsrv := httptest.NewServer(rmw(http.HandlerFunc(echoTenant)))
 		defer rsrv.Close()
 
-		lean := newClient(t, creds.Bundle{UserToken: userTok, Seed: userSeed})
+		lean := newClient(t, creds.Creds{UserToken: userTok, Seed: userSeed})
 		resp, err := lean.Get(rsrv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -252,7 +252,7 @@ func TestUserChain(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "acme", string(body))
 
-		// Same bundle against a server without a resolver is rejected.
+		// The same creds against a server without a resolver are rejected.
 		plain := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}))
 		psrv := httptest.NewServer(plain(http.HandlerFunc(echoTenant)))
 		defer psrv.Close()

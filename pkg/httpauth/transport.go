@@ -11,11 +11,11 @@ import (
 	"github.com/mikluko/valiss/pkg/token"
 )
 
-// Transport is an http.RoundTripper that attaches the credential bundle's
-// tokens and, when the bundle holds a seed, a fresh per-request signature.
-// Bundles without a seed are bearer credentials: the server accepts them only
-// when the effective token grants token.ScopeBearer. Set it as (or wrap it
-// around) http.Client.Transport.
+// Transport is an http.RoundTripper that attaches the creds' tokens and,
+// when the creds hold a seed, a fresh per-request signature. Creds without
+// a seed are bearer credentials: the server accepts them only when the
+// effective token grants token.ScopeBearer. Set it as (or wrap it around)
+// http.Client.Transport.
 type Transport struct {
 	base      http.RoundTripper
 	token     string
@@ -24,11 +24,10 @@ type Transport struct {
 	now       func() time.Time
 }
 
-// NewTransport builds a client transport from a creds bundle: the tenant
-// token, the optional user token, and the seed matching the effective
-// token's bound key (nil for bearer bundles). A nil base means
-// http.DefaultTransport.
-func NewTransport(b creds.Bundle, base http.RoundTripper) (*Transport, error) {
+// NewTransport builds a client transport from parsed creds: the tokens
+// they carry and the seed matching the effective token's bound key (nil
+// for bearer creds). A nil base means http.DefaultTransport.
+func NewTransport(b creds.Creds, base http.RoundTripper) (*Transport, error) {
 	t := &Transport{base: base, token: b.Token, userToken: b.UserToken, now: time.Now}
 	if len(b.Seed) > 0 {
 		subject, err := nkeys.FromSeed(b.Seed)

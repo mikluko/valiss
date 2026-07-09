@@ -30,7 +30,7 @@ import (
 func main() {
 	// Operator side: mint the trust anchor, a tenant account key, and a
 	// scoped account token. In production the valiss CLI does this and hands
-	// the client a creds bundle (see pkg/creds).
+	// the client a creds file (see pkg/creds).
 	operator, err := nkeys.CreateOperator()
 	check(err)
 	operatorPub, err := operator.PublicKey()
@@ -68,7 +68,7 @@ func main() {
 	// Client side, account level: per-RPC credentials sign every call with
 	// the account seed. AllowInsecure only because the in-memory pipe has no
 	// TLS.
-	conn := dial(lis, creds.Bundle{Token: tok, Seed: accountSeed})
+	conn := dial(lis, creds.Creds{Token: tok, Seed: accountSeed})
 	defer conn.Close()
 
 	resp, err := healthpb.NewHealthClient(conn).Check(context.Background(), &healthpb.HealthCheckRequest{})
@@ -86,7 +86,7 @@ func main() {
 	userTok, err := token.IssueUser(account, "alice", userPub, []string{checkScope}, time.Hour)
 	check(err)
 
-	userConn := dial(lis, creds.Bundle{Token: tok, UserToken: userTok, Seed: userSeed})
+	userConn := dial(lis, creds.Creds{Token: tok, UserToken: userTok, Seed: userSeed})
 	defer userConn.Close()
 
 	resp, err = healthpb.NewHealthClient(userConn).Check(context.Background(), &healthpb.HealthCheckRequest{})
@@ -103,7 +103,7 @@ func main() {
 		status.Code(err), status.Convert(err).Message())
 }
 
-func dial(lis *bufconn.Listener, b creds.Bundle) *grpc.ClientConn {
+func dial(lis *bufconn.Listener, b creds.Creds) *grpc.ClientConn {
 	c, err := grpcauth.NewCredentials(b)
 	check(err)
 	conn, err := grpc.NewClient("passthrough:///bufnet",

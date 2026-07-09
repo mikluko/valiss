@@ -1,12 +1,14 @@
-// Package creds implements the client credential bundle file: the tokens a
-// client presents plus the seed that signs its requests, modeled on the nsc
-// creds format. A bundle is everything a client needs.
+// Package creds implements the client credentials file: the subject's token
+// plus the seed that signs its requests, modeled on the nsc creds format.
+// A creds file is everything a client needs.
 //
-// An account-level bundle holds the operator-signed tenant token and the
-// account seed. A user-level bundle additionally holds the account-signed
-// user token, and its seed is the user's. A bearer bundle carries tokens
-// only: its holder cannot sign requests and the server accepts it only when
-// the token grants the bearer scope.
+// Account-level creds hold the operator-signed tenant token and the account
+// seed. User-level creds hold the account-signed user token and the user
+// seed; the server resolves the account token itself. A *bundle* is the kind
+// of creds that additionally carries the upstream account token, for servers
+// that do not resolve it. Bearer creds carry tokens only: their holder
+// cannot sign requests and the server accepts them only when the token
+// grants the bearer scope.
 package creds
 
 import (
@@ -25,23 +27,23 @@ const (
 	seedEnd        = "------END VALISS SEED------"
 )
 
-// Bundle is the parsed content of a creds file.
-type Bundle struct {
-	// Token is the operator-signed tenant token. User-level bundles omit it
-	// by default (the server then resolves the account token by other means,
-	// like static configuration); creds -with-account-token embeds it.
+// Creds is the parsed content of a creds file.
+type Creds struct {
+	// Token is the operator-signed tenant token. User-level creds omit it by
+	// default (the server then resolves the account token by other means,
+	// like static configuration); a bundle (creds -bundle) embeds it.
 	Token string
 	// UserToken is the account-signed user token; empty in account-level
-	// bundles.
+	// creds.
 	UserToken string
-	// Seed signs requests as the bundle's subject: the account seed in an
-	// account-level bundle, the user seed in a user-level one. Nil in bearer
-	// bundles.
+	// Seed signs requests as the creds' subject: the account seed in
+	// account-level creds, the user seed in user-level ones. Nil in bearer
+	// creds.
 	Seed []byte
 }
 
-// Format renders a creds file for the bundle.
-func Format(b Bundle) string {
+// Format renders the creds file content.
+func Format(b Creds) string {
 	var sb strings.Builder
 	if b.Token != "" {
 		fmt.Fprintf(&sb, "%s\n%s\n%s\n", tokenBegin, strings.TrimSpace(b.Token), tokenEnd)
@@ -60,30 +62,30 @@ func Format(b Bundle) string {
 	return sb.String()
 }
 
-// Parse extracts the bundle from a creds file's contents. Every section is
-// optional on its own, but at least one token must be present.
-func Parse(contents string) (Bundle, error) {
-	var b Bundle
+// Parse extracts the creds from a file's contents. Every section is optional
+// on its own, but at least one token must be present.
+func Parse(contents string) (Creds, error) {
+	var b Creds
 	tok, ok, err := between(contents, tokenBegin, tokenEnd)
 	if err != nil {
-		return Bundle{}, fmt.Errorf("valiss: creds token: %w", err)
+		return Creds{}, fmt.Errorf("valiss: creds token: %w", err)
 	}
 	if ok {
 		b.Token = tok
 	}
 	userTok, ok, err := between(contents, userTokenBegin, userTokenEnd)
 	if err != nil {
-		return Bundle{}, fmt.Errorf("valiss: creds user token: %w", err)
+		return Creds{}, fmt.Errorf("valiss: creds user token: %w", err)
 	}
 	if ok {
 		b.UserToken = userTok
 	}
 	if b.Token == "" && b.UserToken == "" {
-		return Bundle{}, fmt.Errorf("valiss: creds: no token markers found")
+		return Creds{}, fmt.Errorf("valiss: creds: no token markers found")
 	}
 	seed, ok, err := between(contents, seedBegin, seedEnd)
 	if err != nil {
-		return Bundle{}, fmt.Errorf("valiss: creds seed: %w", err)
+		return Creds{}, fmt.Errorf("valiss: creds seed: %w", err)
 	}
 	if ok {
 		b.Seed = []byte(seed)
@@ -92,10 +94,10 @@ func Parse(contents string) (Bundle, error) {
 }
 
 // Load reads and parses a creds file.
-func Load(path string) (Bundle, error) {
+func Load(path string) (Creds, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return Bundle{}, fmt.Errorf("valiss: read creds: %w", err)
+		return Creds{}, fmt.Errorf("valiss: read creds: %w", err)
 	}
 	return Parse(string(raw))
 }

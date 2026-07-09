@@ -36,7 +36,7 @@ with TLS and short TTLs.
 
 - `pkg/token` — token issue/verify (account and user level), request
   sign/verify, allowlist, the credential `Verifier`, and `TenantFromContext`
-- `pkg/creds` — client credential bundle file (tokens + seed)
+- `pkg/creds` — client creds file (tokens + seed)
 - `pkg/grpcauth` — gRPC server interceptors and client per-RPC credentials
 - `pkg/httpauth` — net/http server middleware and client transport
 - `internal/manifest` — the valiss.yaml token manifest (CLI-only)
@@ -61,9 +61,9 @@ claims, _ := token.TenantFromContext(ctx) // claims.TenantID segments data,
 Client (gRPC):
 
 ```go
-bundle, _ := creds.Load("alice.creds")
-c, _ := grpcauth.NewCredentials(bundle)
-conn, _ := grpc.NewClient(addr, grpc.WithPerRPCCredentials(c), ...)
+c, _ := creds.Load("alice.creds")
+rpcCreds, _ := grpcauth.NewCredentials(c)
+conn, _ := grpc.NewClient(addr, grpc.WithPerRPCCredentials(rpcCreds), ...)
 ```
 
 Server (HTTP):
@@ -76,8 +76,8 @@ srv := &http.Server{Handler: mw(mux)}
 Client (HTTP):
 
 ```go
-bundle, _ := creds.Load("alice.creds")
-transport, _ := httpauth.NewTransport(bundle, nil)
+c, _ := creds.Load("alice.creds")
+transport, _ := httpauth.NewTransport(c, nil)
 client := &http.Client{Transport: transport}
 ```
 
@@ -93,13 +93,13 @@ signing seeds are supplied via `VALISS_SEED_<PUBKEY>` environment variables
 valiss keygen operator     # one-time: public key = server trust anchor
 valiss keygen account      # per-tenant: public key goes in valiss.yaml
 valiss keygen user         # per-end-user: public key goes in a user entry
-valiss creds ACCOUNT[/USER]  # mint a credential bundle for one entity
+valiss creds ACCOUNT[/USER]  # mint credentials for one entity
 ```
 
 `creds` reads the token manifest (`valiss.yaml` in the working directory,
 override with `-f FILE`), resolves the required seeds from the environment
 (failing with the exact variable name when one is missing), and writes the
-credential bundle to stdout and its metadata to stderr:
+credentials to stdout and their metadata to stderr:
 
 ```console
 $ export VALISS_SEED_OD25ZJ...=SOAI2X...   # operator seed
@@ -112,9 +112,9 @@ account:
 ```
 
 Manifest entries without a `key` get a fresh pair generated per invocation;
-the seed ships only inside the bundle.
+the seed ships only inside the creds.
 
-A user bundle carries only the user token and seed (NATS-resolver style):
+User creds carry only the user token and seed (NATS-resolver style):
 the operator seed is not needed at mint time, so an account holder can
 issue its users on its own. The server resolves account tokens itself,
 e.g. from static configuration:
@@ -135,10 +135,10 @@ verifier := token.NewVerifier(operatorPubKey, allowlist,
     token.WithAccountTokenResolver(resolver))
 ```
 
-Pass `-with-account-token` to opt into the full chain instead: the bundle
-then embeds a freshly minted account token (requiring the operator seed),
-and any server verifies it without a resolver. Each such mint yields a new
-account jti for the allowlist.
+Pass `-bundle` to mint a *bundle* instead: user creds that also embed a
+freshly minted account token (requiring the operator seed), verifiable by
+any server without a resolver. Each bundle mint yields a new account jti
+for the allowlist.
 
 An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
 

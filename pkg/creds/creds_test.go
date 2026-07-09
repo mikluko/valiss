@@ -12,22 +12,22 @@ import (
 const testToken = "eyJhbGciOiJlZDI1NTE5LW5rZXkifQ.payload.signature"
 
 func TestRoundTrip(t *testing.T) {
-	t.Run("account bundle", func(t *testing.T) {
-		b := Bundle{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
+	t.Run("account creds", func(t *testing.T) {
+		b := Creds{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
 		got, err := Parse(Format(b))
 		require.NoError(t, err)
 		assert.Equal(t, b, got)
 	})
 
-	t.Run("user bundle", func(t *testing.T) {
-		b := Bundle{Token: testToken, UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
+	t.Run("user bundle (embedded account token)", func(t *testing.T) {
+		b := Creds{Token: testToken, UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
 		got, err := Parse(Format(b))
 		require.NoError(t, err)
 		assert.Equal(t, b, got)
 	})
 
-	t.Run("bearer bundle has no seed section", func(t *testing.T) {
-		b := Bundle{Token: testToken, UserToken: testToken + "u"}
+	t.Run("bearer creds have no seed section", func(t *testing.T) {
+		b := Creds{Token: testToken, UserToken: testToken + "u"}
 		rendered := Format(b)
 		assert.NotContains(t, rendered, "SEED")
 		got, err := Parse(rendered)
@@ -35,8 +35,8 @@ func TestRoundTrip(t *testing.T) {
 		assert.Equal(t, b, got)
 	})
 
-	t.Run("user-only bundle has no account token section", func(t *testing.T) {
-		b := Bundle{UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
+	t.Run("user-only creds have no account token section", func(t *testing.T) {
+		b := Creds{UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
 		rendered := Format(b)
 		assert.NotContains(t, rendered, "BEGIN VALISS TOKEN")
 		got, err := Parse(rendered)
@@ -46,7 +46,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	b := Bundle{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
+	b := Creds{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
 	path := filepath.Join(t.TempDir(), "acme.creds")
 	require.NoError(t, os.WriteFile(path, []byte(Format(b)), 0o600))
 

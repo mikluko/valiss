@@ -21,7 +21,7 @@ import (
 
 func main() {
 	// Operator side: mint the trust anchor, a tenant account key, and a
-	// scoped account token, bundled the same way the valiss CLI ships it to
+	// scoped account token, rendered as the creds file the valiss CLI ships to
 	// a client.
 	operator, err := nkeys.CreateOperator()
 	check(err)
@@ -38,7 +38,7 @@ func main() {
 	check(err)
 	claims, err := token.Verify(tok, operatorPub)
 	check(err)
-	bundle := creds.Format(creds.Bundle{Token: tok, Seed: accountSeed})
+	rendered := creds.Format(creds.Creds{Token: tok, Seed: accountSeed})
 
 	// Server side: the operator public key and the allowlist are all the
 	// server needs; it never sees any seeds.
@@ -60,11 +60,11 @@ func main() {
 	srv := httptest.NewServer(mw(mux))
 	defer srv.Close()
 
-	// Client side: parse the creds bundle and sign every request via the
+	// Client side: parse the creds and sign every request via the
 	// transport.
-	clientBundle, err := creds.Parse(bundle)
+	clientCreds, err := creds.Parse(rendered)
 	check(err)
-	transport, err := httpauth.NewTransport(clientBundle, nil)
+	transport, err := httpauth.NewTransport(clientCreds, nil)
 	check(err)
 	client := &http.Client{Transport: transport}
 
