@@ -1,4 +1,4 @@
-package token
+package valiss
 
 import (
 	"crypto/sha256"
@@ -24,15 +24,20 @@ const (
 	userType    = "user"
 )
 
+// Extensions is the named extension claims of a token: consumer- or
+// transport-defined claim bodies keyed by extension name. This scheme signs
+// and transports them; meaning is assigned by whoever registered the name
+// (e.g. the httpauth and grpcauth packages, or the library consumer).
+type Extensions map[string]json.RawMessage
+
 // accountBody is the valiss section of an account token.
 type accountBody struct {
 	// Type discriminates the claim body; always "account".
 	Type string `json:"type"`
 	// Scopes granted to the tenant; the ceiling for its users' scopes.
 	Scopes []string `json:"scopes,omitempty"`
-	// Ext carries consumer-defined claims (WithExtension); this scheme signs
-	// and transports them but assigns no meaning.
-	Ext json.RawMessage `json:"ext,omitempty"`
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions `json:"ext,omitempty"`
 }
 
 // userBody is the valiss section of a user token.
@@ -45,18 +50,17 @@ type userBody struct {
 	// Bearer marks a token the server accepts without per-request
 	// signatures.
 	Bearer bool `json:"bearer,omitempty"`
-	// Ext carries consumer-defined claims (WithExtension); this scheme signs
-	// and transports them but assigns no meaning.
-	Ext json.RawMessage `json:"ext,omitempty"`
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions `json:"ext,omitempty"`
 }
 
 // anyBody is the superset body used when the token level is not known up
 // front (Decode).
 type anyBody struct {
-	Type   string          `json:"type"`
-	Scopes []string        `json:"scopes,omitempty"`
-	Bearer bool            `json:"bearer,omitempty"`
-	Ext    json.RawMessage `json:"ext,omitempty"`
+	Type   string     `json:"type"`
+	Scopes []string   `json:"scopes,omitempty"`
+	Bearer bool       `json:"bearer,omitempty"`
+	Ext    Extensions `json:"ext,omitempty"`
 }
 
 // wire is the JWT claims document. Standard fields use their RFC 7519 names

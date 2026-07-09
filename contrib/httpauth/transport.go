@@ -7,14 +7,14 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/creds"
 )
 
 // Transport is an http.RoundTripper that attaches the creds' tokens and,
 // when the creds hold a seed, a fresh per-request signature. Creds without
 // a seed are bearer credentials: the server accepts them only when the
-// effective token grants token.ScopeBearer. Set it as (or wrap it around)
+// effective token grants valiss.ScopeBearer. Set it as (or wrap it around)
 // http.Client.Transport.
 type Transport struct {
 	base         http.RoundTripper
@@ -43,18 +43,18 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// RoundTrippers must not mutate the caller's request.
 	req = req.Clone(req.Context())
 	if t.accountToken != "" {
-		req.Header.Set(token.HeaderAccountToken, t.accountToken)
+		req.Header.Set(valiss.HeaderAccountToken, t.accountToken)
 	}
 	if t.userToken != "" {
-		req.Header.Set(token.HeaderUserToken, t.userToken)
+		req.Header.Set(valiss.HeaderUserToken, t.userToken)
 	}
 	if t.subject != nil {
-		timestamp, signature, err := token.SignRequest(t.subject, t.now())
+		timestamp, signature, err := valiss.SignRequest(t.subject, t.now())
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Set(token.HeaderTimestamp, timestamp)
-		req.Header.Set(token.HeaderSignature, signature)
+		req.Header.Set(valiss.HeaderTimestamp, timestamp)
+		req.Header.Set(valiss.HeaderSignature, signature)
 	}
 	base := t.base
 	if base == nil {

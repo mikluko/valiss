@@ -8,14 +8,14 @@ import (
 	"github.com/nats-io/nkeys"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/creds"
 )
 
 // Credentials is a grpc.PerRPCCredentials that attaches the creds' tokens
 // and, when the creds hold a seed, a fresh per-call signature. Creds
 // without a seed are bearer credentials: the server accepts them only when
-// the effective token grants token.ScopeBearer. Use
+// the effective token grants valiss.ScopeBearer. Use
 // grpc.WithPerRPCCredentials on the client.
 type Credentials struct {
 	accountToken string
@@ -52,18 +52,18 @@ func (c *Credentials) AllowInsecure() *Credentials {
 func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
 	md := map[string]string{}
 	if c.accountToken != "" {
-		md[token.HeaderAccountToken] = c.accountToken
+		md[valiss.HeaderAccountToken] = c.accountToken
 	}
 	if c.userToken != "" {
-		md[token.HeaderUserToken] = c.userToken
+		md[valiss.HeaderUserToken] = c.userToken
 	}
 	if c.subject != nil {
-		timestamp, signature, err := token.SignRequest(c.subject, c.now())
+		timestamp, signature, err := valiss.SignRequest(c.subject, c.now())
 		if err != nil {
 			return nil, err
 		}
-		md[token.HeaderTimestamp] = timestamp
-		md[token.HeaderSignature] = signature
+		md[valiss.HeaderTimestamp] = timestamp
+		md[valiss.HeaderSignature] = signature
 	}
 	return md, nil
 }

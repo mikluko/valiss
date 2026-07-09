@@ -1,7 +1,7 @@
 // Example httpauth shows the full tenant-auth wiring for net/http: an
-// operator signs a scoped account token, the server wraps its mux with the
-// auth middleware, and the client signs every request via the transport.
-// Runs self-contained against a local listener.
+// operator signs an account token carrying an HTTP extension, the server
+// wraps its mux with the auth middleware, and the client signs every request
+// via the transport. Runs self-contained against a local listener.
 package main
 
 import (
@@ -10,19 +10,19 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/httpauth"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/contrib/httpauth"
+	"github.com/mikluko/valiss/creds"
 )
 
 func main() {
-	// Operator side: mint the trust anchor, a tenant account key, and a
-	// scoped account token, rendered as the creds file the valiss CLI ships to
-	// a client.
+	// Operator side: mint the trust anchor, a tenant account key, and an
+	// account token bound to GET requests under /v1/ by the HTTP extension.
 	operator, err := nkeys.CreateOperator()
 	check(err)
 	operatorPub, err := operator.PublicKey()
@@ -34,9 +34,12 @@ func main() {
 	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := token.Issue(operator, "acme", accountPub, []string{"call:/v1/*"}, token.WithTTL(time.Hour))
+	tok, err := valiss.Issue(operator, "acme", accountPub, nil,
+		httpauth.WithExt(httpauth.Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
+		valiss.WithTTL(time.Hour),
+	)
 	check(err)
-	claims, err := token.VerifyAccount(tok, operatorPub)
+	claims, err := valiss.VerifyAccount(tok, operatorPub)
 	check(err)
 	rendered := creds.Format(creds.Creds{AccountToken: tok, Seed: accountSeed})
 
@@ -46,22 +49,18 @@ func main() {
 	mux.HandleFunc("/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
 		// The middleware injected the verified tenant; the handler reads it
 		// for logging and data segmentation.
-		c, _ := token.TenantFromContext(r.Context())
+		c, _ := valiss.TenantFromContext(r.Context())
 		log.Printf("tenant %q calls %s", c.TenantID, r.URL.Path)
 		fmt.Fprintf(w, "hello, tenant %q\n", c.TenantID)
 	})
 	mux.HandleFunc("/admin/", func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "admin area\n")
 	})
-	mw := httpauth.NewMiddleware(
-		token.NewVerifier(operatorPub, token.NewStaticAllowlist(claims.ID)),
-		httpauth.WithPathScope(),
-	)
+	mw := httpauth.NewMiddleware(valiss.NewVerifier(operatorPub, valiss.NewStaticAllowlist(claims.ID)))
 	srv := httptest.NewServer(mw(mux))
 	defer srv.Close()
 
-	// Client side: parse the creds and sign every request via the
-	// transport.
+	// Client side: parse the creds and sign every request via the transport.
 	clientCreds, err := creds.Parse(rendered)
 	check(err)
 	transport, err := httpauth.NewTransport(clientCreds, nil)
@@ -74,18 +73,27 @@ func main() {
 	check(err)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("expected 200 for the in-scope request, got: %s", resp.Status)
+		log.Fatalf("expected 200 for the in-extension request, got: %s", resp.Status)
 	}
-	fmt.Printf("in-scope request allowed as expected: %s -> %s", resp.Status, body)
+	fmt.Printf("in-extension request allowed as expected: %s -> %s", resp.Status, body)
 
-	// A path outside the granted scope is denied.
+	// A path outside the extension is denied.
 	resp, err = client.Get(srv.URL + "/admin/")
 	check(err)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
-		log.Fatalf("expected 403 for the out-of-scope path, got: %s", resp.Status)
+		log.Fatalf("expected 403 for the out-of-extension path, got: %s", resp.Status)
 	}
-	fmt.Println("out-of-scope path denied as expected:", resp.Status)
+	fmt.Println("out-of-extension path denied as expected:", resp.Status)
+
+	// So is a method outside the extension.
+	resp, err = client.Post(srv.URL+"/v1/whoami", "text/plain", strings.NewReader("hi"))
+	check(err)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		log.Fatalf("expected 403 for the out-of-extension method, got: %s", resp.Status)
+	}
+	fmt.Println("out-of-extension method denied as expected:", resp.Status)
 
 	// No credential at all is rejected outright.
 	resp, err = http.Get(srv.URL + "/v1/whoami")

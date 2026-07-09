@@ -19,7 +19,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
 )
 
 // User describes one end user under an account. A user entry either binds a
@@ -156,7 +156,7 @@ func validateAccount(a Account) error {
 			return fmt.Errorf("user %q: %w", u.Name, err)
 		}
 		for _, s := range u.Scopes {
-			if !token.Covered(a.Scopes, s) {
+			if !valiss.Covered(a.Scopes, s) {
 				return fmt.Errorf("user %q: scope %q is not covered by the account scopes", u.Name, s)
 			}
 		}

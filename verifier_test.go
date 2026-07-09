@@ -1,4 +1,4 @@
-package token
+package valiss
 
 import (
 	"errors"
@@ -127,9 +127,9 @@ func TestClaimsValidator(t *testing.T) {
 		type userExt struct {
 			Team string `json:"team"`
 		}
-		extTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithExtension(acctExt{Plan: "pro"}))
+		extTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithExtension("acme.example", acctExt{Plan: "pro"}))
 		require.NoError(t, err)
-		extUserTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithExtension(userExt{Team: "red"}))
+		extUserTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithExtension("acme.example", userExt{Team: "red"}))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(user, time.Now())
 		require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestClaimsValidator(t *testing.T) {
 		var gotAcct acctExt
 		var gotUser userExt
 		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(
-			ExtValidator(func(_ Request, _ *Claims, a acctExt, u userExt) error {
+			ExtValidator("acme.example", func(_ Request, _ *Claims, a acctExt, u userExt) error {
 				gotAcct, gotUser = a, u
 				return nil
 			}),

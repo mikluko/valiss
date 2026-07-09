@@ -33,7 +33,10 @@ accounts:
   # its users' tokens.
   - name: acme              # tenant name; segments all stored data
     key: AC4BYRVFUKRB7R4QEHSQFGV7R6HDIAMGR2C6GPAOUD3BANKQ4G44JQU4
-    scopes:                 # granted scopes; prefix wildcards supported
+    # Scopes are consumer-defined strings (prefix wildcards supported); the
+    # library only clamps user scopes to the account's. Transport-level
+    # authorization uses typed extensions issued programmatically.
+    scopes:
       - call:/example.v1.WidgetService/*
     # Validity boundaries are absolute RFC3339 timestamps, so re-minting is
     # deterministic. Omitted expires = the token never expires (nsc default);

@@ -31,9 +31,9 @@ import (
 	"github.com/nats-io/nkeys"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mikluko/valiss/internal/manifest"
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/creds"
+	"github.com/mikluko/valiss/examples/cli/manifest"
 )
 
 func main() {
@@ -185,13 +185,13 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 }
 
 // validity turns the manifest's absolute boundaries into issue options.
-func validity(expires, notBefore time.Time) []token.IssueOption {
-	var opts []token.IssueOption
+func validity(expires, notBefore time.Time) []valiss.IssueOption {
+	var opts []valiss.IssueOption
 	if !expires.IsZero() {
-		opts = append(opts, token.WithExpiry(expires))
+		opts = append(opts, valiss.WithExpiry(expires))
 	}
 	if !notBefore.IsZero() {
-		opts = append(opts, token.WithNotBefore(notBefore))
+		opts = append(opts, valiss.WithNotBefore(notBefore))
 	}
 	return opts
 }
@@ -220,7 +220,7 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 		return err
 	}
 	tok, meta, err := mintToken(func() (string, error) {
-		return token.Issue(operator, acct.Name, pub, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
+		return valiss.Issue(operator, acct.Name, pub, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
 	}, acct.Name, pub, generated)
 	if err != nil {
 		return err
@@ -262,7 +262,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 	)
 	if operator != nil {
 		tok, meta, err := mintToken(func() (string, error) {
-			return token.Issue(operator, acct.Name, acct.Key, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
+			return valiss.Issue(operator, acct.Name, acct.Key, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
 		}, acct.Name, acct.Key, false)
 		if err != nil {
 			return err
@@ -282,14 +282,14 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 	if user.Bearer {
 		// Bearer creds carry no seed: for a generated pair the seed is
 		// discarded, making the token the sole credential.
-		opts = append(opts, token.WithBearer())
+		opts = append(opts, valiss.WithBearer())
 	} else {
 		if bundle.Seed, err = subject.Seed(); err != nil {
 			return err
 		}
 	}
 	userTok, userMeta, err := mintToken(func() (string, error) {
-		return token.IssueUser(account, user.Name, userPub, user.Scopes, opts...)
+		return valiss.IssueUser(account, user.Name, userPub, user.Scopes, opts...)
 	}, user.Name, userPub, generated)
 	if err != nil {
 		return err
@@ -308,7 +308,7 @@ func mintToken(issue func() (string, error), name, pub string, generated bool) (
 		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", name, err)
 	}
 	// The token was minted in-process; decoding only re-reads its claims.
-	claims, err := token.Decode(tok)
+	claims, err := valiss.Decode(tok)
 	if err != nil {
 		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", name, err)
 	}

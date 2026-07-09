@@ -1,4 +1,4 @@
-package token
+package valiss
 
 import (
 	"os"
@@ -142,26 +142,43 @@ func TestExtension(t *testing.T) {
 		Quota int    `json:"quota"`
 	}
 
-	tok, err := Issue(op, "acme", tenantPub, nil, WithExtension(domainClaims{Plan: "pro", Quota: 42}))
+	tok, err := Issue(op, "acme", tenantPub, nil,
+		WithExtension("acme.example", domainClaims{Plan: "pro", Quota: 42}),
+		WithExtension("other", map[string]string{"k": "v"}),
+	)
 	require.NoError(t, err)
 	claims, err := VerifyAccount(tok, opPub)
 	require.NoError(t, err)
-	got, err := Ext[domainClaims](claims.AccountExt)
+	got, err := Ext[domainClaims](claims.AccountExt, "acme.example")
 	require.NoError(t, err)
 	assert.Equal(t, domainClaims{Plan: "pro", Quota: 42}, got)
+	other, err := Ext[map[string]string](claims.AccountExt, "other")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"k": "v"}, other)
 
 	t.Run("absent extension decodes to zero value", func(t *testing.T) {
 		plain, err := Issue(op, "acme", tenantPub, nil)
 		require.NoError(t, err)
 		claims, err := VerifyAccount(plain, opPub)
 		require.NoError(t, err)
-		got, err := Ext[domainClaims](claims.AccountExt)
+		got, err := Ext[domainClaims](claims.AccountExt, "acme.example")
 		require.NoError(t, err)
 		assert.Zero(t, got)
 	})
 
+	t.Run("duplicate extension name rejected", func(t *testing.T) {
+		_, err := Issue(op, "acme", tenantPub, nil,
+			WithExtension("dup", 1), WithExtension("dup", 2))
+		assert.ErrorContains(t, err, `duplicate extension "dup"`)
+	})
+
+	t.Run("empty extension name rejected", func(t *testing.T) {
+		_, err := Issue(op, "acme", tenantPub, nil, WithExtension("", 1))
+		assert.ErrorContains(t, err, "name must not be empty")
+	})
+
 	t.Run("unmarshalable extension rejected at issue", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, nil, WithExtension(func() {}))
+		_, err := Issue(op, "acme", tenantPub, nil, WithExtension("bad", func() {}))
 		assert.ErrorContains(t, err, "encode extension")
 	})
 }

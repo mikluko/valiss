@@ -1,7 +1,8 @@
 // Package grpcauth wires the tenant authentication scheme into gRPC: server
-// interceptors that verify the per-request credential and a client per-RPC
-// credential that attaches it. Handlers read the authenticated tenant with
-// token.TenantFromContext.
+// interceptors that verify the per-request credential and enforce the gRPC
+// extension claim (Ext), and a client per-RPC credential that attaches the
+// credential. Handlers read the authenticated tenant with
+// valiss.TenantFromContext.
 package grpcauth
 
 import (
@@ -12,43 +13,17 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
 )
 
-// ScopeForMethod is the per-call scope a tenant must hold when method-scope
-// enforcement is enabled: "call:" joined with the gRPC full method, e.g.
-// "call:/example.v1.WidgetService/CreateWidget".
-func ScopeForMethod(fullMethod string) string {
-	return "call:" + fullMethod
-}
-
-// Authenticator verifies the per-request tenant credential and, optionally,
-// per-method authorization.
+// Authenticator verifies the per-request tenant credential and enforces the
+// tokens' gRPC extensions.
 type Authenticator struct {
-	verifier       *token.Verifier
-	scopeForMethod func(fullMethod string) string
+	verifier *valiss.Verifier
 }
 
-// Option configures an Authenticator.
-type Option func(*Authenticator)
-
-// WithMethodScope requires the tenant to hold ScopeForMethod(fullMethod) for
-// every call; without the scope the request is denied (PermissionDenied).
-func WithMethodScope() Option {
-	return func(a *Authenticator) { a.scopeForMethod = ScopeForMethod }
-}
-
-// WithScopeMapper requires a custom per-method scope instead of the default.
-func WithScopeMapper(fn func(fullMethod string) string) Option {
-	return func(a *Authenticator) { a.scopeForMethod = fn }
-}
-
-func NewAuthenticator(verifier *token.Verifier, opts ...Option) *Authenticator {
-	a := &Authenticator{verifier: verifier}
-	for _, opt := range opts {
-		opt(a)
-	}
-	return a
+func NewAuthenticator(verifier *valiss.Verifier) *Authenticator {
+	return &Authenticator{verifier: verifier}
 }
 
 // authenticate verifies the credential and authorizes the method, returning
@@ -58,11 +33,11 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing request metadata")
 	}
-	req := token.Request{
-		AccountToken: first(md, token.HeaderAccountToken),
-		UserToken:    first(md, token.HeaderUserToken),
-		Timestamp:    first(md, token.HeaderTimestamp),
-		Signature:    first(md, token.HeaderSignature),
+	req := valiss.Request{
+		AccountToken: first(md, valiss.HeaderAccountToken),
+		UserToken:    first(md, valiss.HeaderUserToken),
+		Timestamp:    first(md, valiss.HeaderTimestamp),
+		Signature:    first(md, valiss.HeaderSignature),
 	}
 	if req.AccountToken == "" && req.UserToken == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")
@@ -71,13 +46,10 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 	if err != nil {
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
-	if a.scopeForMethod != nil {
-		scope := a.scopeForMethod(fullMethod)
-		if !claims.Authorizes(scope) {
-			return nil, status.Errorf(codes.PermissionDenied, "tenant lacks scope %q", scope)
-		}
+	if err := authorizeExt(claims, fullMethod); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
-	return token.ContextWithTenant(ctx, claims), nil
+	return valiss.ContextWithTenant(ctx, claims), nil
 }
 
 // UnaryInterceptor authenticates and authorizes unary RPCs.

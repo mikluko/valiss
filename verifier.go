@@ -1,4 +1,4 @@
-package token
+package valiss
 
 import (
 	"errors"
@@ -99,17 +99,17 @@ func WithClaimsValidator(fn ClaimsValidator) VerifierOption {
 	return func(v *Verifier) { v.validators = append(v.validators, fn) }
 }
 
-// ExtValidator adapts a typed validator over the tokens' extension claims
-// (WithExtension) into a ClaimsValidator: the account and user extensions
-// are decoded into A and U before fn runs. Missing extensions decode to
-// zero values.
-func ExtValidator[A, U any](fn func(req Request, claims *Claims, acct A, user U) error) ClaimsValidator {
+// ExtValidator adapts a typed validator over a named extension claim
+// (WithExtension) into a ClaimsValidator: the extension is decoded from the
+// account and user tokens into A and U before fn runs. Missing extensions
+// decode to zero values.
+func ExtValidator[A, U any](name string, fn func(req Request, claims *Claims, acct A, user U) error) ClaimsValidator {
 	return func(req Request, claims *Claims) error {
-		acct, err := Ext[A](claims.AccountExt)
+		acct, err := Ext[A](claims.AccountExt, name)
 		if err != nil {
 			return err
 		}
-		user, err := Ext[U](claims.UserExt)
+		user, err := Ext[U](claims.UserExt, name)
 		if err != nil {
 			return err
 		}

@@ -1,4 +1,4 @@
-// Package token implements the core of the tenant authentication scheme,
+// Package valiss implements the core of the tenant authentication scheme,
 // modeled on NATS operator/account/user credentials:
 //
 //   - An operator holds an Ed25519 nkey; its public key is the trust anchor
@@ -19,7 +19,7 @@
 // human-readable label, as in NATS. Key levels are strict: operator keys
 // (SO.../O...) sign account tokens for account keys (SA.../A...), account
 // keys sign user tokens for user keys (SU.../U...).
-package token
+package valiss
 
 import (
 	"encoding/json"
@@ -56,11 +56,11 @@ type Claims struct {
 	ExpiresAt time.Time
 	// NotBefore is the token activation time; zero means immediately valid.
 	NotBefore time.Time
-	// AccountExt and UserExt carry the consumer-defined extension claims of
-	// the account and user tokens (WithExtension), verbatim. Decode them
-	// with Ext or validate them with ExtValidator.
-	AccountExt json.RawMessage
-	UserExt    json.RawMessage
+	// AccountExt and UserExt carry the named extension claims of the account
+	// and user tokens (WithExtension), verbatim. Decode them with Ext or
+	// validate them with ExtValidator.
+	AccountExt Extensions
+	UserExt    Extensions
 }
 
 // issueConfig collects IssueOption effects.
@@ -68,7 +68,7 @@ type issueConfig struct {
 	expires   int64
 	notBefore int64
 	bearer    bool
-	ext       json.RawMessage
+	ext       Extensions
 	err       error
 }
 
@@ -100,17 +100,29 @@ func WithBearer() IssueOption {
 	return func(c *issueConfig) { c.bearer = true }
 }
 
-// WithExtension embeds consumer-defined claims into the token's ext field.
-// The scheme signs and transports them untouched; servers read them back
+// WithExtension embeds a named extension claim into the token's ext field.
+// Repeat the option for multiple extensions; a duplicate name is an error.
+// The scheme signs and transports the value untouched; servers read it back
 // via Claims.AccountExt/UserExt, the Ext helper, or an ExtValidator.
-func WithExtension(v any) IssueOption {
+func WithExtension(name string, v any) IssueOption {
 	return func(c *issueConfig) {
-		raw, err := json.Marshal(v)
-		if err != nil {
-			c.err = fmt.Errorf("valiss: encode extension: %w", err)
+		if name == "" {
+			c.err = errors.New("valiss: extension name must not be empty")
 			return
 		}
-		c.ext = raw
+		if _, dup := c.ext[name]; dup {
+			c.err = fmt.Errorf("valiss: duplicate extension %q", name)
+			return
+		}
+		raw, err := json.Marshal(v)
+		if err != nil {
+			c.err = fmt.Errorf("valiss: encode extension %q: %w", name, err)
+			return
+		}
+		if c.ext == nil {
+			c.ext = Extensions{}
+		}
+		c.ext[name] = raw
 	}
 }
 
@@ -233,14 +245,16 @@ func Decode(token string) (*Claims, error) {
 	return claims, nil
 }
 
-// Ext decodes an extension claim into T. Empty raw yields the zero value.
-func Ext[T any](raw json.RawMessage) (T, error) {
+// Ext decodes a named extension claim into T. An absent name yields the
+// zero value.
+func Ext[T any](exts Extensions, name string) (T, error) {
 	var v T
-	if len(raw) == 0 {
+	raw, ok := exts[name]
+	if !ok {
 		return v, nil
 	}
 	if err := json.Unmarshal(raw, &v); err != nil {
-		return v, fmt.Errorf("valiss: decode extension: %w", err)
+		return v, fmt.Errorf("valiss: decode extension %q: %w", name, err)
 	}
 	return v, nil
 }

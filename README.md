@@ -1,65 +1,89 @@
 # valiss
 
-**VAL**idator-**ISS**uer: tenant authentication for gRPC and HTTP services,
-modeled on NATS operator/account/user credentials.
+**VAL**idator-**ISS**uer: a Go library for tenant authentication in gRPC and
+HTTP services, modeled on NATS operator/account/user credentials.
 
 - An **operator** holds an Ed25519 nkey; its public key is the trust anchor.
-- The operator signs each **account** (tenant) a scoped, time-limited JWT
-  that binds the account's own nkey public key. Issued token ids go in a
+- The operator signs each **account** (tenant) a time-limited token that
+  binds the account's own nkey public key. Issued token ids go in a
   server-side allowlist.
-- An account may delegate: it signs **user** tokens with its account seed,
-  granting end users a subset of its scopes. Servers verify the chain up to
-  the pinned operator key; nothing else needs distribution.
+- An account may delegate: it signs **user** tokens with its account seed.
+  Servers verify the chain up to the pinned operator key; nothing else needs
+  distribution.
 - The client **signs every request** with its nkey over a timestamp. The
   server verifies the token (chain) against the operator key, the signature
-  against the bound key within a skew window, and the account token id
+  against the subject key within a skew window, and the account token id
   against the allowlist, then hands the tenant (and user) identity to the
   handler for data segmentation.
 
 Key types map to nkeys directly: operator `SO...`/`O...`, account
-`SA...`/`A...`, user `SU...`/`U...`.
+`SA...`/`A...`, user `SU...`/`U...`. Tokens are valiss's own typed claims in
+an nkey-signed JWT: `sub` is the subject's public key, `name` the
+human-readable label, validity via optional absolute `exp`/`nbf` (absent
+`exp` = never expires, as in nsc).
 
-Per-method authorization: grant `call:<fullMethod>` scopes (prefix wildcards
-like `call:/pkg.Service/*` and `call:*` supported) and enable
-`WithMethodScope()` on the authenticator. User scopes are clamped to the
-account's grants at verification, so a tenant can never delegate more than
-it holds.
+## Extensions
 
-Bearer credentials: a user token minted with the bearer flag authenticates
-without a per-request signature (token-only, replayable). Meant for user
-entries marked `bearer: true`, where handing out a seed is impractical; pair
-with TLS and a short validity window. Accounts never get bearer tokens.
+Tokens carry named extension claims — signed, typed payloads under the `ext`
+field. Transport authorization is built on them:
 
-Tokens carry valiss's own typed claims in an nkey-signed JWT; consumers can
-embed domain-specific claims via `token.WithExtension(v)` and validate them
-server-side with `token.ExtValidator` (typed) or `token.Ext[T]`.
+- `contrib/httpauth` defines `Ext{Hosts, Methods, Paths}` (name `http`): the
+  middleware rejects requests outside the extension's bounds with 403.
+- `contrib/grpcauth` defines `Ext{Methods}` (name `grpc`): the interceptors
+  reject methods outside the extension with PermissionDenied.
+
+Extensions present on both chain levels are both enforced, so an
+account-level extension bounds every user of the account. Consumers add
+their own domain claims the same way:
+
+```go
+tok, _ := valiss.IssueUser(account, "alice", alicePub, nil,
+    grpcauth.WithExt(grpcauth.Ext{Methods: []string{"/example.v1.Widgets/*"}}),
+    valiss.WithExtension("acme.example", myClaims{Plan: "pro"}),
+    valiss.WithTTL(time.Hour),
+)
+
+verifier := valiss.NewVerifier(operatorPub, allowlist,
+    valiss.WithClaimsValidator(valiss.ExtValidator("acme.example",
+        func(req valiss.Request, c *valiss.Claims, acct, user myClaims) error {
+            // domain-specific checks
+            return nil
+        })),
+)
+```
+
+Generic string scopes also exist (`Claims.Scopes`, user clamped to account);
+the library assigns them no meaning beyond the subset rule.
+
+Bearer credentials: a user token minted with `valiss.WithBearer()`
+authenticates without a per-request signature (token-only, replayable);
+pair with TLS and a short validity window. Accounts never get bearer tokens.
 
 ## Layout
 
-`main.go` at the root is the CLI; the consumable library lives under `pkg/`.
-
-- `pkg/token` — token issue/verify (account and user level), request
-  sign/verify, allowlist, the credential `Verifier`, and `TenantFromContext`
-- `pkg/creds` — client creds file (tokens + seed)
-- `pkg/grpcauth` — gRPC server interceptors and client per-RPC credentials
-- `pkg/httpauth` — net/http server middleware and client transport
-- `internal/manifest` — the valiss.yaml token manifest (CLI-only)
-- `examples/` — runnable end-to-end demos for both transports
+- root (`github.com/mikluko/valiss`) — token issue/verify (account and user
+  level), request sign/verify, allowlist, the request `Verifier`, extension
+  plumbing, and `TenantFromContext`
+- `creds` — client creds file (tokens + seed, nsc style)
+- `contrib/httpauth` — net/http middleware, client transport, HTTP extension
+- `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
+- `examples/` — runnable end-to-end demos, including the manifest-driven
+  `examples/cli` credential minting tool
 
 ## Library
 
 Server (gRPC):
 
 ```go
-verifier := token.NewVerifier(operatorPubKey, allowlist)
-auth := grpcauth.NewAuthenticator(verifier, grpcauth.WithMethodScope())
+verifier := valiss.NewVerifier(operatorPubKey, allowlist)
+auth := grpcauth.NewAuthenticator(verifier)
 srv := grpc.NewServer(
     grpc.UnaryInterceptor(auth.UnaryInterceptor()),
     grpc.StreamInterceptor(auth.StreamInterceptor()),
 )
 // in a handler:
-claims, _ := token.TenantFromContext(ctx) // claims.TenantID segments data,
-                                          // claims.UserID names the end user
+claims, _ := valiss.TenantFromContext(ctx) // claims.TenantID segments data,
+                                           // claims.UserID names the end user
 ```
 
 Client (gRPC):
@@ -73,7 +97,7 @@ conn, _ := grpc.NewClient(addr, grpc.WithPerRPCCredentials(rpcCreds), ...)
 Server (HTTP):
 
 ```go
-mw := httpauth.NewMiddleware(token.NewVerifier(operatorPubKey, allowlist))
+mw := httpauth.NewMiddleware(valiss.NewVerifier(operatorPubKey, allowlist))
 srv := &http.Server{Handler: mw(mux)}
 ```
 
@@ -87,80 +111,26 @@ client := &http.Client{Transport: transport}
 
 Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`.
 
-## CLI
+Servers that hold account tokens in configuration (NATS-resolver style)
+accept user-token-only requests via
+`valiss.WithAccountTokenResolver(valiss.StaticAccountTokens(...))`.
 
-Stateless: key pairs are printed once at generation and never stored;
-signing seeds are supplied via `VALISS_SEED_<PUBKEY>` environment variables
-(a secrets manager that injects env fits naturally).
+## Example CLI
+
+`examples/cli` is a manifest-driven credential minting tool (and a worked
+example of the issuance API). Stateless: key pairs print once and are never
+stored; signing seeds come from `VALISS_SEED_<PUBKEY>` environment variables.
 
 ```
-valiss keygen operator     # one-time: public key = server trust anchor
-valiss keygen account      # per-tenant: public key goes in valiss.yaml
-valiss keygen user         # per-end-user: public key goes in a user entry
-valiss creds ACCOUNT[/USER]  # mint credentials for one entity
+go run ./examples/cli keygen operator     # public key = server trust anchor
+go run ./examples/cli keygen account      # per-tenant key pair
+go run ./examples/cli keygen user         # per-end-user key pair
+go run ./examples/cli creds ACCOUNT[/USER]  # mint creds for a manifest entry
 ```
 
-`creds` reads the token manifest (`valiss.yaml` in the working directory,
-override with `-f FILE`), resolves the required seeds from the environment
-(failing with the exact variable name when one is missing), and writes the
-credentials to stdout and their metadata to stderr:
-
-```console
-$ export VALISS_SEED_OD25ZJ...=SOAI2X...   # operator seed
-$ valiss creds acme > acme.creds
-account:
-  name: acme
-  key: AC4JQU...
-  jti: FVIENQPFQY...        # add to the server allowlist
-  expires: 2026-08-08T09:00:00Z
-```
-
-Manifest entries without a `key` get a fresh pair generated per invocation;
-the seed ships only inside the creds.
-
-User creds carry only the user token and seed (NATS-resolver style):
-the operator seed is not needed at mint time, so an account holder can
-issue its users on its own. The server resolves account tokens itself,
-e.g. from static configuration:
-
-```console
-$ export VALISS_SEED_AC4JQU...=SAAK7G...   # account seed
-$ valiss creds acme/alice > alice.creds
-user:
-  name: alice
-  key: UDKED...
-  jti: NQLQXOWTGN...
-  expires: 2026-07-09T13:00:00Z
-```
-
-```go
-resolver, _ := token.StaticAccountTokens(acctTok1, acctTok2)
-verifier := token.NewVerifier(operatorPubKey, allowlist,
-    token.WithAccountTokenResolver(resolver))
-```
-
-Pass `-bundle` to mint a *bundle* instead: user creds that also embed a
-freshly minted account token (requiring the operator seed), verifiable by
-any server without a resolver. Each bundle mint yields a new account jti
-for the allowlist.
-
-An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
-
-```yaml
-# valiss.yaml — public data only, safe to commit
-operator: ODZ6U...          # trust anchor; seed from VALISS_SEED_<this key>
-accounts:
-  - name: acme
-    key: ABPZ7...            # account public key from `valiss keygen account`
-    scopes: ["call:/pkg.Svc/*"]
-    expires: 2026-08-08T00:00:00Z   # optional; omitted = never expires
-    users:
-      - name: alice
-        key: UDGH3...        # user public key; seed stays with the user
-        scopes: ["call:/pkg.Svc/Get"]
-        expires: 2026-07-16T00:00:00Z
-        not_before: 2026-07-09T00:00:00Z  # optional activation time
-      - name: carol
-        bearer: true         # token-only credential, no seed handed out
-        scopes: ["call:/pkg.Svc/List"]
-```
+`creds` reads `valiss.yaml` (see the annotated
+[`examples/cli/valiss.example.yaml`](examples/cli/valiss.example.yaml)),
+resolves seeds from the environment, and writes the creds to stdout with
+metadata — including the allowlist jti — on stderr. User creds carry only
+the user token by default; `-bundle` embeds a fresh account token for
+servers without a resolver.

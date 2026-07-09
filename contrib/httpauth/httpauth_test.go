@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/creds"
 )
 
 func issuerKeys(t *testing.T) (nkeys.KeyPair, string) {
@@ -37,7 +37,7 @@ func tenantKeys(t *testing.T) (nkeys.KeyPair, string, []byte) {
 
 // echoTenant writes the authenticated tenant id back to the client.
 func echoTenant(w http.ResponseWriter, r *http.Request) {
-	claims, ok := token.TenantFromContext(r.Context())
+	claims, ok := valiss.TenantFromContext(r.Context())
 	if !ok {
 		http.Error(w, "no tenant in context", http.StatusInternalServerError)
 		return
@@ -55,10 +55,10 @@ func newClient(t *testing.T, b creds.Creds) *http.Client {
 func TestMiddlewareTransport(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, nil, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
-	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
@@ -82,30 +82,71 @@ func TestMiddlewareTransport(t *testing.T) {
 	})
 }
 
-func TestMiddlewareScope(t *testing.T) {
+func TestExtEnforcement(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:/v1/checks"}, token.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, nil,
+		WithExt(Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
+		valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
-	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
 	client := newClient(t, creds.Creds{AccountToken: tok, Seed: seed})
 
-	t.Run("granted path allowed", func(t *testing.T) {
+	t.Run("request inside the extension allowed", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
 		require.NoError(t, err)
 		resp.Body.Close()
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
-	t.Run("other path denied", func(t *testing.T) {
-		resp, err := client.Get(srv.URL + "/v1/admin")
+	t.Run("path outside the extension denied", func(t *testing.T) {
+		resp, err := client.Get(srv.URL + "/admin")
 		require.NoError(t, err)
 		resp.Body.Close()
 		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("method outside the extension denied", func(t *testing.T) {
+		resp, err := client.Post(srv.URL+"/v1/checks", "text/plain", nil)
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("host outside the extension denied", func(t *testing.T) {
+		bound, err := valiss.Issue(op, "acme", tenantPub, nil,
+			WithExt(Ext{Hosts: []string{"api.example.com"}}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		resp, err := newClient(t, creds.Creds{AccountToken: bound, Seed: seed}).Get(srv.URL + "/v1/checks")
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	})
+
+	t.Run("account extension clamps the user", func(t *testing.T) {
+		account, accountPub, acctSeed := tenantKeys(t)
+		_ = acctSeed
+		acctTok, err := valiss.Issue(op, "acme", accountPub, nil,
+			WithExt(Ext{Paths: []string{"/v1/*"}}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+		user, err := nkeys.CreateUser()
+		require.NoError(t, err)
+		userPub, err := user.PublicKey()
+		require.NoError(t, err)
+		userSeed, err := user.Seed()
+		require.NoError(t, err)
+		wide, err := valiss.IssueUser(account, "mallory", userPub, nil,
+			WithExt(Ext{Paths: []string{"/admin/*"}}), valiss.WithTTL(time.Hour))
+		require.NoError(t, err)
+
+		resp, err := newClient(t, creds.Creds{AccountToken: acctTok, UserToken: wide, Seed: userSeed}).Get(srv.URL + "/admin/panel")
+		require.NoError(t, err)
+		resp.Body.Close()
+		assert.Equal(t, http.StatusForbidden, resp.StatusCode, "user extension cannot escape the account extension")
 	})
 }
 
@@ -117,14 +158,14 @@ func TestBearerTransport(t *testing.T) {
 	userPub, err := user.PublicKey()
 	require.NoError(t, err)
 
-	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, token.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub, []string{"call:*"}, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}))
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
 	t.Run("bearer user token allows token-only request", func(t *testing.T) {
-		bearerTok, err := token.IssueUser(account, "carol", userPub, []string{"call:*"}, token.WithBearer(), token.WithTTL(time.Hour))
+		bearerTok, err := valiss.IssueUser(account, "carol", userPub, []string{"call:*"}, valiss.WithBearer(), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		client := newClient(t, creds.Creds{AccountToken: acctTok, UserToken: bearerTok})
 		resp, err := client.Get(srv.URL)
@@ -150,17 +191,17 @@ func TestBearerTransport(t *testing.T) {
 func TestMiddlewareRejections(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, nil, token.WithTTL(time.Hour))
+	tok, err := valiss.Issue(op, "acme", tenantPub, nil, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	claims, err := token.VerifyAccount(tok, opPub)
+	claims, err := valiss.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
 
-	mw := NewMiddleware(token.NewVerifier(opPub, token.NewStaticAllowlist(claims.ID)))
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist(claims.ID)))
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
 	t.Run("token not in allowlist", func(t *testing.T) {
-		strict := NewMiddleware(token.NewVerifier(opPub, token.NewStaticAllowlist("other")))
+		strict := NewMiddleware(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist("other")))
 		srv2 := httptest.NewServer(strict(http.HandlerFunc(echoTenant)))
 		defer srv2.Close()
 		resp, err := newClient(t, creds.Creds{AccountToken: tok, Seed: seed}).Get(srv2.URL)
@@ -172,13 +213,13 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 
 	t.Run("stale request signature", func(t *testing.T) {
-		ts, sig, err := token.SignRequest(tenant, time.Now().Add(-time.Hour))
+		ts, sig, err := valiss.SignRequest(tenant, time.Now().Add(-time.Hour))
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
-		req.Header.Set(token.HeaderAccountToken, tok)
-		req.Header.Set(token.HeaderTimestamp, ts)
-		req.Header.Set(token.HeaderSignature, sig)
+		req.Header.Set(valiss.HeaderAccountToken, tok)
+		req.Header.Set(valiss.HeaderTimestamp, ts)
+		req.Header.Set(valiss.HeaderSignature, sig)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		resp.Body.Close()
@@ -193,7 +234,7 @@ func TestMiddlewareRejections(t *testing.T) {
 		resp, err := transport.RoundTrip(req)
 		require.NoError(t, err)
 		resp.Body.Close()
-		assert.Empty(t, req.Header.Get(token.HeaderAccountToken))
+		assert.Empty(t, req.Header.Get(valiss.HeaderAccountToken))
 	})
 }
 
@@ -209,14 +250,15 @@ func TestUserChain(t *testing.T) {
 	userSeed, err := user.Seed()
 	require.NoError(t, err)
 
-	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, token.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, "acme", accountPub, nil, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/v1/checks"}, token.WithTTL(time.Hour))
+	userTok, err := valiss.IssueUser(account, "alice", userPub, nil,
+		WithExt(Ext{Paths: []string{"/v1/checks"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
-	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		claims, ok := token.TenantFromContext(r.Context())
+		claims, ok := valiss.TenantFromContext(r.Context())
 		require.True(t, ok)
 		io.WriteString(w, claims.TenantID+"/"+claims.UserID)
 	})))
@@ -242,14 +284,14 @@ func TestUserChain(t *testing.T) {
 	})
 
 	t.Run("user-only creds against a resolver-configured server", func(t *testing.T) {
-		resolver, err := token.StaticAccountTokens(acctTok)
+		resolver, err := valiss.StaticAccountTokens(acctTok)
 		require.NoError(t, err)
-		rmw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}, token.WithAccountTokenResolver(resolver)))
+		rmw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}, valiss.WithAccountTokenResolver(resolver)))
 		rsrv := httptest.NewServer(rmw(http.HandlerFunc(echoTenant)))
 		defer rsrv.Close()
 
 		lean := newClient(t, creds.Creds{UserToken: userTok, Seed: userSeed})
-		resp, err := lean.Get(rsrv.URL)
+		resp, err := lean.Get(rsrv.URL + "/v1/checks")
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		body, err := io.ReadAll(resp.Body)
@@ -258,10 +300,10 @@ func TestUserChain(t *testing.T) {
 		assert.Equal(t, "acme", string(body))
 
 		// The same creds against a server without a resolver are rejected.
-		plain := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}))
+		plain := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}))
 		psrv := httptest.NewServer(plain(http.HandlerFunc(echoTenant)))
 		defer psrv.Close()
-		resp, err = lean.Get(psrv.URL)
+		resp, err = lean.Get(psrv.URL + "/v1/checks")
 		require.NoError(t, err)
 		resp.Body.Close()
 		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)

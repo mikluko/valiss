@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mikluko/valiss/pkg/creds"
-	"github.com/mikluko/valiss/pkg/token"
+	"github.com/mikluko/valiss"
+	"github.com/mikluko/valiss/creds"
 )
 
 // keygenPair runs cmdKeygen and parses its stdout back into a pair.
@@ -129,7 +129,7 @@ func TestCredsAccount(t *testing.T) {
 	assert.Empty(t, parsed.UserToken)
 	assert.Equal(t, f.acctSeed, string(parsed.Seed), "bundle carries the env-provided account seed")
 
-	claims, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
+	claims, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, f.acctPub, claims.PubKey)
@@ -154,7 +154,7 @@ func TestCredsGeneratedAccount(t *testing.T) {
 	pub, err := kp.PublicKey()
 	require.NoError(t, err)
 
-	claims, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
+	claims, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	assert.Equal(t, pub, claims.PubKey, "token binds the freshly generated key")
 	assert.True(t, meta.Account.Generated)
@@ -177,7 +177,7 @@ func TestCredsUser(t *testing.T) {
 	assert.Equal(t, f.userSeed, string(parsed.Seed))
 	assert.Empty(t, parsed.AccountToken, "account token omitted by default")
 
-	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
+	user, err := valiss.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 	assert.Equal(t, "alice", user.TenantID)
 	assert.Equal(t, f.userPub, user.PubKey)
@@ -187,19 +187,19 @@ func TestCredsUser(t *testing.T) {
 	assert.Equal(t, user.ID, meta.User.JTI)
 
 	// A server with the account token in static configuration accepts it.
-	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, token.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	acct, err := token.VerifyAccount(acctTok, f.opPub)
+	acct, err := valiss.VerifyAccount(acctTok, f.opPub)
 	require.NoError(t, err)
-	resolver, err := token.StaticAccountTokens(acctTok)
+	resolver, err := valiss.StaticAccountTokens(acctTok)
 	require.NoError(t, err)
-	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID), token.WithAccountTokenResolver(resolver))
+	v := valiss.NewVerifier(f.opPub, valiss.NewStaticAllowlist(acct.ID), valiss.WithAccountTokenResolver(resolver))
 
 	kp, err := nkeys.FromSeed(parsed.Seed)
 	require.NoError(t, err)
-	ts, sig, err := token.SignRequest(kp, time.Now())
+	ts, sig, err := valiss.SignRequest(kp, time.Now())
 	require.NoError(t, err)
-	claims, err := v.VerifyRequest(token.Request{UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
+	claims, err := v.VerifyRequest(valiss.Request{UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, "alice", claims.UserID)
@@ -214,9 +214,9 @@ func TestCredsUserBundle(t *testing.T) {
 	parsed, meta := runCreds(t, f, "acme/alice", "-bundle")
 	assert.Equal(t, f.userSeed, string(parsed.Seed))
 
-	acct, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
+	acct, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
-	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
+	user, err := valiss.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 
 	require.NotNil(t, meta.Account)
@@ -225,12 +225,12 @@ func TestCredsUserBundle(t *testing.T) {
 	assert.Equal(t, user.ID, meta.User.JTI)
 
 	// The embedded chain passes the verifier without a resolver.
-	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID))
+	v := valiss.NewVerifier(f.opPub, valiss.NewStaticAllowlist(acct.ID))
 	kp, err := nkeys.FromSeed(parsed.Seed)
 	require.NoError(t, err)
-	ts, sig, err := token.SignRequest(kp, time.Now())
+	ts, sig, err := valiss.SignRequest(kp, time.Now())
 	require.NoError(t, err)
-	claims, err := v.VerifyRequest(token.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
+	claims, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, "alice", claims.UserID)
@@ -262,7 +262,7 @@ func TestCredsGeneratedUser(t *testing.T) {
 	require.NotEmpty(t, parsed.Seed)
 	assert.True(t, meta.User.Generated)
 
-	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
+	user, err := valiss.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 	kp, err := nkeys.FromSeed(parsed.Seed)
 	require.NoError(t, err)
@@ -285,14 +285,14 @@ func TestCredsBearerUser(t *testing.T) {
 	assert.NotEmpty(t, meta.User.Key, "the throwaway key still names the token subject")
 	assert.True(t, meta.User.Generated)
 
-	user, err := token.VerifyUser(parsed.UserToken, f.acctPub)
+	user, err := valiss.VerifyUser(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
 	assert.True(t, user.Bearer, "bearer flag set on the token")
 
-	acct, err := token.VerifyAccount(parsed.AccountToken, f.opPub)
+	acct, err := valiss.VerifyAccount(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
-	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID))
-	claims, err := v.VerifyRequest(token.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken})
+	v := valiss.NewVerifier(f.opPub, valiss.NewStaticAllowlist(acct.ID))
+	claims, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken})
 	require.NoError(t, err)
 	assert.Equal(t, "carol", claims.UserID)
 	assert.True(t, claims.Bearer)
