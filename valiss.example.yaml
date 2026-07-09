@@ -31,35 +31,39 @@ operator: ODPRLS7YYJKZTLCJFUO765BRAHYY5MTKNMAZIOFEL6WCDAVKQOBD25ZJ
 accounts:
   # One entry per tenant. The account key signs the tenant's requests and
   # its users' tokens.
-  - id: acme                # tenant id; segments all stored data
+  - name: acme              # tenant name; segments all stored data
     key: AC4BYRVFUKRB7R4QEHSQFGV7R6HDIAMGR2C6GPAOUD3BANKQ4G44JQU4
     scopes:                 # granted scopes; prefix wildcards supported
       - call:/example.v1.WidgetService/*
-    ttl: 720h               # optional; defaults to 720h (30 days)
+    # Validity boundaries are absolute RFC3339 timestamps, so re-minting is
+    # deterministic. Omitted expires = the token never expires (nsc default);
+    # omitted not_before = valid immediately.
+    expires: 2026-08-08T00:00:00Z
     users:
       # Users hold a subset of the account scopes; the server clamps them
-      # at verification too. User tokens default to a 1h ttl.
-      - id: alice
+      # at verification too.
+      - name: alice
         key: UDT3JMUJSPJR6KQOQ33JMFK44T4TTQWF4X35RFHI62WAWWQOXYSKEDH7
         scopes:
           - call:/example.v1.WidgetService/GetWidget
-        ttl: 1h
+        expires: 2026-07-16T00:00:00Z
+        not_before: 2026-07-09T00:00:00Z
       # No key: a fresh pair is generated on every `valiss creds acme/bob`,
       # and the seed ships inside the creds.
-      - id: bob
+      - name: bob
         scopes:
           - call:/example.v1.WidgetService/GetWidget
       # Explicit bearer: keyless, token-only credential that cannot sign
-      # requests. Replayable until expiry; keep the ttl short.
-      - id: carol
+      # requests. Replayable until expiry; keep the window short.
+      - name: carol
         bearer: true
         scopes:
           - call:/example.v1.WidgetService/ListWidgets
-        ttl: 1h
+        expires: 2026-07-10T00:00:00Z
 
   # No account key: a fresh pair is generated per mint. Such an account
   # cannot have users minted from this manifest (its signing seed has no
   # stable VALISS_SEED_ name).
-  - id: globex
+  - name: globex
     scopes:
       - call:*              # everything

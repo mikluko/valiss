@@ -13,9 +13,9 @@ func TestVerifyCredentialBearer(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub := tenantKeys(t)
 
-	bearerTok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer, "read"}, time.Hour)
+	bearerTok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer, "read"}, WithTTL(time.Hour))
 	require.NoError(t, err)
-	signedOnlyTok, err := Issue(op, "acme", tenantPub, []string{"read"}, time.Hour)
+	signedOnlyTok, err := Issue(op, "acme", tenantPub, []string{"read"}, WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{})
@@ -49,7 +49,7 @@ func TestVerifyCredentialBearer(t *testing.T) {
 	})
 
 	t.Run("bearer wildcard not implied by call wildcard", func(t *testing.T) {
-		callAll, err := Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
+		callAll, err := Issue(op, "acme", tenantPub, []string{"call:*"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: callAll})
 		assert.ErrorContains(t, err, "bearer scope")
@@ -61,13 +61,13 @@ func TestClaimsValidator(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
 	require.NoError(t, err)
 	acctTS, acctSig, err := SignRequest(account, time.Now())
 	require.NoError(t, err)
 
 	t.Run("validator sees the effective claims", func(t *testing.T) {
-		userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Hour)
+		userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(user, time.Now())
 		require.NoError(t, err)
@@ -118,14 +118,56 @@ func TestClaimsValidator(t *testing.T) {
 	})
 }
 
+func TestValidityWindow(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	_, tenantPub := tenantKeys(t)
+
+	t.Run("token without expiry never expires", func(t *testing.T) {
+		tok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer})
+		require.NoError(t, err)
+		claims, err := Verify(tok, opPub)
+		require.NoError(t, err)
+		assert.True(t, claims.ExpiresAt.IsZero())
+
+		farFuture := NewVerifier(opPub, AllowAll{}, WithClock(func() time.Time { return time.Now().Add(100 * 365 * 24 * time.Hour) }))
+		_, err = farFuture.VerifyRequest(Request{AccountToken: tok})
+		assert.NoError(t, err)
+	})
+
+	t.Run("not-before gates the token", func(t *testing.T) {
+		start := time.Now().Add(time.Hour)
+		tok, err := Issue(op, "acme", tenantPub, []string{ScopeBearer}, WithTTL(2*time.Hour), WithNotBefore(start))
+		require.NoError(t, err)
+
+		early := NewVerifier(opPub, AllowAll{}, WithSkew(0))
+		_, err = early.VerifyRequest(Request{AccountToken: tok})
+		assert.ErrorContains(t, err, "not yet valid")
+
+		inWindow := NewVerifier(opPub, AllowAll{}, WithSkew(0), WithClock(func() time.Time { return start.Add(time.Minute) }))
+		_, err = inWindow.VerifyRequest(Request{AccountToken: tok})
+		assert.NoError(t, err)
+	})
+
+	t.Run("user token not-before gates the chain", func(t *testing.T) {
+		account, accountPub := tenantKeys(t)
+		acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
+		require.NoError(t, err)
+		userTok, err := IssueUser(account, "carol", "", []string{ScopeBearer}, WithNotBefore(time.Now().Add(time.Hour)))
+		require.NoError(t, err)
+		v := NewVerifier(opPub, AllowAll{}, WithSkew(0))
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: userTok})
+		assert.ErrorContains(t, err, "user token not yet valid")
+	})
+}
+
 func TestAccountTokenResolver(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:*"}, WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Hour)
+	userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 	require.NoError(t, err)
 	ts, sig, err := SignRequest(user, time.Now())
 	require.NoError(t, err)
@@ -149,7 +191,7 @@ func TestAccountTokenResolver(t *testing.T) {
 
 	t.Run("unknown account rejected", func(t *testing.T) {
 		other, _ := tenantKeys(t)
-		foreignUserTok, err := IssueUser(other, "mallory", userPub, []string{"call:/svc/Get"}, time.Hour)
+		foreignUserTok, err := IssueUser(other, "mallory", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithAccountTokenResolver(resolver))
 		_, err = v.VerifyRequest(Request{UserToken: foreignUserTok, Timestamp: ts, Signature: sig})
@@ -180,9 +222,9 @@ func TestVerifyCredentialChain(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, []string{"call:/svc/*"}, time.Hour)
+	acctTok, err := Issue(op, "acme", accountPub, []string{"call:/svc/*"}, WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Hour)
+	userTok, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{})
@@ -208,14 +250,14 @@ func TestVerifyCredentialChain(t *testing.T) {
 
 	t.Run("user token signed by a foreign account rejected", func(t *testing.T) {
 		other, _ := tenantKeys(t)
-		foreign, err := IssueUser(other, "alice", userPub, []string{"call:/svc/Get"}, time.Hour)
+		foreign, err := IssueUser(other, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: foreign, Timestamp: ts, Signature: sig})
 		assert.ErrorContains(t, err, "expected issuer")
 	})
 
 	t.Run("scope escalation clamped to the account grants", func(t *testing.T) {
-		escalated, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get", "call:/other/*"}, time.Hour)
+		escalated, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get", "call:/other/*"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		claims, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: escalated, Timestamp: ts, Signature: sig})
 		require.NoError(t, err)
@@ -224,7 +266,7 @@ func TestVerifyCredentialChain(t *testing.T) {
 	})
 
 	t.Run("bearer user makes token-only requests", func(t *testing.T) {
-		bearer, err := IssueUser(account, "carol", "", []string{ScopeBearer, "call:/svc/Get"}, time.Hour)
+		bearer, err := IssueUser(account, "carol", "", []string{ScopeBearer, "call:/svc/Get"}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		claims, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearer})
 		require.NoError(t, err)
@@ -238,14 +280,14 @@ func TestVerifyCredentialChain(t *testing.T) {
 	})
 
 	t.Run("signed request with a keyless bearer token rejected", func(t *testing.T) {
-		bearer, err := IssueUser(account, "carol", "", []string{ScopeBearer}, time.Hour)
+		bearer, err := IssueUser(account, "carol", "", []string{ScopeBearer}, WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearer, Timestamp: ts, Signature: sig})
 		assert.ErrorContains(t, err, "binds no key")
 	})
 
 	t.Run("expired user token rejected", func(t *testing.T) {
-		short, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Second)
+		short, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Second))
 		require.NoError(t, err)
 		late := NewVerifier(opPub, AllowAll{}, WithClock(func() time.Time { return time.Now().Add(10 * time.Minute) }), WithSkew(0))
 		_, err = late.VerifyRequest(Request{AccountToken: acctTok, UserToken: short})
@@ -253,7 +295,7 @@ func TestVerifyCredentialChain(t *testing.T) {
 	})
 
 	t.Run("expiry is the earlier of the two tokens", func(t *testing.T) {
-		short, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, time.Minute)
+		short, err := IssueUser(account, "alice", userPub, []string{"call:/svc/Get"}, WithTTL(time.Minute))
 		require.NoError(t, err)
 		claims, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: short, Timestamp: ts, Signature: sig})
 		require.NoError(t, err)

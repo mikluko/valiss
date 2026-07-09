@@ -60,13 +60,15 @@ func TestKeygen(t *testing.T) {
 // fixture is a manifest with an operator, a keyed account with users, and a
 // keyless account, alongside the generated seeds.
 type fixture struct {
-	cfgPath  string
-	opPub    string
-	opSeed   string
-	acctPub  string
-	acctSeed string
-	userPub  string
-	userSeed string
+	cfgPath     string
+	opPub       string
+	opSeed      string
+	acctPub     string
+	acctSeed    string
+	userPub     string
+	userSeed    string
+	acctExpires time.Time
+	bobExpires  time.Time
 }
 
 func newFixture(t *testing.T) fixture {
@@ -75,28 +77,30 @@ func newFixture(t *testing.T) fixture {
 	f.opPub, f.opSeed = keygenPair(t, "operator")
 	f.acctPub, f.acctSeed = keygenPair(t, "account")
 	f.userPub, f.userSeed = keygenPair(t, "user")
+	f.acctExpires = time.Now().Add(168 * time.Hour).UTC().Truncate(time.Second)
+	f.bobExpires = time.Now().Add(30 * time.Minute).UTC().Truncate(time.Second)
 	f.cfgPath = filepath.Join(t.TempDir(), "valiss.yaml")
 	require.NoError(t, os.WriteFile(f.cfgPath, []byte(`
 operator: `+f.opPub+`
 accounts:
-  - id: acme
+  - name: acme
     key: `+f.acctPub+`
     scopes: ["call:/pkg.Svc/*"]
-    ttl: 168h
+    expires: `+f.acctExpires.Format(time.RFC3339)+`
     users:
-      - id: alice
+      - name: alice
         key: `+f.userPub+`
         scopes: ["call:/pkg.Svc/Get"]
-      - id: bob
+      - name: bob
         scopes: ["call:/pkg.Svc/Get"]
-        ttl: 30m
-      - id: carol
+        expires: `+f.bobExpires.Format(time.RFC3339)+`
+      - name: carol
         bearer: true
         scopes: ["call:/pkg.Svc/Get"]
-  - id: globex
+  - name: globex
     scopes: ["call:*"]
     users:
-      - id: eve
+      - name: eve
         bearer: true
         scopes: ["call:*"]
 `), 0o600))
@@ -135,7 +139,7 @@ func TestCredsAccount(t *testing.T) {
 	assert.False(t, meta.Account.Generated)
 	expires, err := time.Parse(time.RFC3339, meta.Account.Expires)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now().Add(168*time.Hour), expires, time.Minute)
+	assert.True(t, expires.Equal(f.acctExpires), "expiry is exactly the manifest boundary: %s != %s", expires, f.acctExpires)
 	assert.Nil(t, meta.User)
 }
 
@@ -183,7 +187,7 @@ func TestCredsUser(t *testing.T) {
 	assert.Equal(t, user.ID, meta.User.JTI)
 
 	// A server with the account token in static configuration accepts it.
-	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, time.Hour)
+	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 	acct, err := token.Verify(acctTok, f.opPub)
 	require.NoError(t, err)
@@ -268,7 +272,7 @@ func TestCredsGeneratedUser(t *testing.T) {
 
 	expires, err := time.Parse(time.RFC3339, meta.User.Expires)
 	require.NoError(t, err)
-	assert.WithinDuration(t, time.Now().Add(30*time.Minute), expires, time.Minute)
+	assert.True(t, expires.Equal(f.bobExpires), "expiry is exactly the manifest boundary")
 }
 
 func TestCredsBearerUser(t *testing.T) {

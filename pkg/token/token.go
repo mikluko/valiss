@@ -31,11 +31,10 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// Scopes carried in the token's custom claims.
-const (
-	scopesClaim = "scopes"
-	pubKeyClaim = "subject_key"
-)
+// Scopes carried in the token's custom claims. The subject's public key
+// needs no custom claim: as in NATS, the JWT sub claim is the key itself and
+// the human-readable label lives in the name field.
+const scopesClaim = "scopes"
 
 // Claims is the verified content of a token.
 type Claims struct {
@@ -53,26 +52,49 @@ type Claims struct {
 	ID string
 	// Issuer is the issuer public key that signed the token.
 	Issuer string
-	// ExpiresAt is the token expiry.
+	// ExpiresAt is the token expiry; zero means the token never expires.
 	ExpiresAt time.Time
+	// NotBefore is the token activation time; zero means immediately valid.
+	NotBefore time.Time
 }
 
-// Issue mints an account token signed by the operator key. tenantPubKey is the
-// tenant's nkey public key; the tenant signs requests with the matching seed.
-func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, ttl time.Duration) (string, error) {
+// IssueOption customizes a minted token. Without a WithTTL or WithExpiry
+// option the token never expires, matching nsc's default.
+type IssueOption func(*jwt.GenericClaims)
+
+// WithTTL makes the token expire ttl from now (the JWT exp claim).
+func WithTTL(ttl time.Duration) IssueOption {
+	return func(gc *jwt.GenericClaims) { gc.Expires = time.Now().Add(ttl).Unix() }
+}
+
+// WithExpiry makes the token expire at t (the JWT exp claim).
+func WithExpiry(t time.Time) IssueOption {
+	return func(gc *jwt.GenericClaims) { gc.Expires = t.Unix() }
+}
+
+// WithNotBefore makes the token invalid before t (the JWT nbf claim), like
+// nsc's --start.
+func WithNotBefore(t time.Time) IssueOption {
+	return func(gc *jwt.GenericClaims) { gc.NotBefore = t.Unix() }
+}
+
+// Issue mints an account token signed by the operator key. As in NATS, the
+// token subject is the tenant's public key and name carries the tenant id;
+// the tenant signs requests with the seed matching the subject key. Validity
+// comes from IssueOptions; without one the token never expires.
+func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, opts ...IssueOption) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
 		return "", fmt.Errorf("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
 	if !nkeys.IsValidPublicUserKey(tenantPubKey) && !nkeys.IsValidPublicAccountKey(tenantPubKey) {
 		return "", fmt.Errorf("valiss: invalid tenant public key")
 	}
-	if ttl <= 0 {
-		return "", fmt.Errorf("valiss: ttl must be positive")
-	}
-	gc := jwt.NewGenericClaims(tenantID)
-	gc.Expires = time.Now().Add(ttl).Unix()
-	gc.Data[pubKeyClaim] = tenantPubKey
+	gc := jwt.NewGenericClaims(tenantPubKey)
+	gc.Name = tenantID
 	gc.Data[scopesClaim] = scopes
+	for _, opt := range opts {
+		opt(gc)
+	}
 	token, err := gc.Encode(operator)
 	if err != nil {
 		return "", fmt.Errorf("valiss: encode token: %w", err)
@@ -80,11 +102,13 @@ func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []strin
 	return token, nil
 }
 
-// IssueUser mints a user token signed by a tenant's account key, delegating a
-// subset of the tenant's access to an end user. userPubKey is the user's nkey
-// public key; it may be empty only when scopes grant ScopeBearer, producing a
-// token-only credential for users that cannot sign requests.
-func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string, ttl time.Duration) (string, error) {
+// IssueUser mints a user token signed by a tenant's account key, delegating
+// a subset of the tenant's access to an end user. As in NATS, the token
+// subject is the user's public key and name carries the user id. userPubKey
+// may be empty only when scopes grant ScopeBearer, producing a token-only
+// credential for users that cannot sign requests. Validity comes from
+// IssueOptions; without one the token never expires.
+func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string, opts ...IssueOption) (string, error) {
 	if pub, err := account.PublicKey(); err != nil || !nkeys.IsValidPublicAccountKey(pub) {
 		return "", fmt.Errorf("valiss: user tokens must be signed by an account-type nkey (expected an SA... seed)")
 	}
@@ -95,15 +119,17 @@ func IssueUser(account nkeys.KeyPair, userID, userPubKey string, scopes []string
 	} else if !nkeys.IsValidPublicUserKey(userPubKey) && !nkeys.IsValidPublicAccountKey(userPubKey) {
 		return "", fmt.Errorf("valiss: invalid user public key")
 	}
-	if ttl <= 0 {
-		return "", fmt.Errorf("valiss: ttl must be positive")
+	// Keyless bearer tokens have nothing to put in sub but the name.
+	sub := userPubKey
+	if sub == "" {
+		sub = userID
 	}
-	gc := jwt.NewGenericClaims(userID)
-	gc.Expires = time.Now().Add(ttl).Unix()
-	if userPubKey != "" {
-		gc.Data[pubKeyClaim] = userPubKey
-	}
+	gc := jwt.NewGenericClaims(sub)
+	gc.Name = userID
 	gc.Data[scopesClaim] = scopes
+	for _, opt := range opts {
+		opt(gc)
+	}
 	token, err := gc.Encode(account)
 	if err != nil {
 		return "", fmt.Errorf("valiss: encode user token: %w", err)
@@ -124,13 +150,20 @@ func Verify(token, issuerPubKey string) (*Claims, error) {
 	if gc.Issuer != issuerPubKey {
 		return nil, fmt.Errorf("valiss: token not signed by the expected issuer")
 	}
-	pubKey, _ := gc.Data[pubKeyClaim].(string)
+	var pubKey string
+	if nkeys.IsValidPublicAccountKey(gc.Subject) || nkeys.IsValidPublicUserKey(gc.Subject) {
+		pubKey = gc.Subject
+	}
 	scopes := toStrings(gc.Data[scopesClaim])
 	if pubKey == "" && !slices.Contains(scopes, ScopeBearer) {
-		return nil, errors.New("valiss: token missing subject key")
+		return nil, errors.New("valiss: token subject is not a key and scopes do not grant bearer")
+	}
+	name := gc.Name
+	if name == "" {
+		name = gc.Subject
 	}
 	claims := &Claims{
-		TenantID: gc.Subject,
+		TenantID: name,
 		PubKey:   pubKey,
 		Scopes:   scopes,
 		ID:       gc.ID,
@@ -139,12 +172,21 @@ func Verify(token, issuerPubKey string) (*Claims, error) {
 	if gc.Expires != 0 {
 		claims.ExpiresAt = time.Unix(gc.Expires, 0)
 	}
+	if gc.NotBefore != 0 {
+		claims.NotBefore = time.Unix(gc.NotBefore, 0)
+	}
 	return claims, nil
 }
 
 // Expired reports whether the token has passed its expiry (with skew slack).
 func (c *Claims) Expired(now time.Time, skew time.Duration) bool {
 	return !c.ExpiresAt.IsZero() && now.After(c.ExpiresAt.Add(skew))
+}
+
+// NotYetValid reports whether the token's not-before still lies in the
+// future (with skew slack).
+func (c *Claims) NotYetValid(now time.Time, skew time.Duration) bool {
+	return !c.NotBefore.IsZero() && now.Add(skew).Before(c.NotBefore)
 }
 
 // HasScope reports whether the tenant holds an exact scope grant.

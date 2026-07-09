@@ -1,8 +1,13 @@
 // Package manifest reads the valiss.yaml token manifest: the public,
-// non-secret description of the credential tree (operator public keys,
+// non-secret description of the credential tree (operator public key,
 // accounts with their public keys and scopes, users under each account).
 // Seeds never appear here; the creds command resolves them from
 // VALISS_SEED_<PUBKEY> environment variables.
+//
+// The manifest is deterministic: validity boundaries are absolute RFC3339
+// timestamps (expires, not_before), so re-minting against the same manifest
+// yields the same validity window. An entry without expires never expires,
+// matching nsc's default.
 package manifest
 
 import (
@@ -17,30 +22,13 @@ import (
 	"github.com/mikluko/valiss/pkg/token"
 )
 
-// Default TTLs for entries without an explicit ttl.
-const (
-	DefaultAccountTTL = 30 * 24 * time.Hour
-	DefaultUserTTL    = time.Hour
-)
-
-// Duration is a time.Duration that unmarshals from YAML strings like "720h".
-type Duration time.Duration
-
-func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
-	dur, err := time.ParseDuration(node.Value)
-	if err != nil {
-		return fmt.Errorf("ttl: %w", err)
-	}
-	*d = Duration(dur)
-	return nil
-}
-
 // User describes one end user under an account. A user entry either binds a
 // key (present in the manifest or generated at mint time) or is an explicit
 // bearer entry whose token-only credential cannot sign requests.
 type User struct {
-	// ID identifies the user within its account.
-	ID string `yaml:"id"`
+	// Name identifies the user within its account (the JWT name field; the
+	// sub claim carries the key).
+	Name string `yaml:"name"`
 	// Key is the user's nkey public key; its seed must then be supplied via
 	// VALISS_SEED_<key>. Absent means a fresh key pair is generated at mint
 	// time. Mutually exclusive with Bearer.
@@ -51,22 +39,19 @@ type User struct {
 	// Scopes granted to the user; each must be covered by the account's
 	// scopes.
 	Scopes []string `yaml:"scopes,omitempty"`
-	// TTL is the user token time-to-live; DefaultUserTTL when omitted.
-	TTL Duration `yaml:"ttl,omitempty"`
-}
-
-// TTLOrDefault returns the user's ttl, falling back to DefaultUserTTL.
-func (u User) TTLOrDefault() time.Duration {
-	if u.TTL == 0 {
-		return DefaultUserTTL
-	}
-	return time.Duration(u.TTL)
+	// Expires is the token expiry (the JWT exp claim), absolute RFC3339.
+	// Absent means the token never expires.
+	Expires time.Time `yaml:"expires,omitempty"`
+	// NotBefore is the token activation time (the JWT nbf claim), absolute
+	// RFC3339. Absent means immediately valid.
+	NotBefore time.Time `yaml:"not_before,omitempty"`
 }
 
 // Account describes one tenant under an operator.
 type Account struct {
-	// ID is the tenant id the token binds; it segments all stored data.
-	ID string `yaml:"id"`
+	// Name is the tenant id the token binds (the JWT name field; the sub
+	// claim carries the key); it segments all stored data.
+	Name string `yaml:"name"`
 	// Key is the account's nkey public key; its seed must then be supplied
 	// via VALISS_SEED_<key>. Absent means a fresh key pair is generated at
 	// mint time (such an account cannot have users minted against the
@@ -74,24 +59,20 @@ type Account struct {
 	Key string `yaml:"key,omitempty"`
 	// Scopes granted to the account, e.g. "call:/pkg.Svc/*".
 	Scopes []string `yaml:"scopes,omitempty"`
-	// TTL is the account token time-to-live; DefaultAccountTTL when omitted.
-	TTL Duration `yaml:"ttl,omitempty"`
+	// Expires is the token expiry (the JWT exp claim), absolute RFC3339.
+	// Absent means the token never expires.
+	Expires time.Time `yaml:"expires,omitempty"`
+	// NotBefore is the token activation time (the JWT nbf claim), absolute
+	// RFC3339. Absent means immediately valid.
+	NotBefore time.Time `yaml:"not_before,omitempty"`
 	// Users are the end users the account delegates access to.
 	Users []User `yaml:"users,omitempty"`
 }
 
-// TTLOrDefault returns the account's ttl, falling back to DefaultAccountTTL.
-func (a Account) TTLOrDefault() time.Duration {
-	if a.TTL == 0 {
-		return DefaultAccountTTL
-	}
-	return time.Duration(a.TTL)
-}
-
-// User returns the user entry with the given id.
-func (a Account) User(id string) (User, bool) {
+// User returns the user entry with the given name.
+func (a Account) User(name string) (User, bool) {
 	for _, u := range a.Users {
-		if u.ID == id {
+		if u.Name == name {
 			return u, true
 		}
 	}
@@ -107,14 +88,14 @@ type Manifest struct {
 	Accounts []Account `yaml:"accounts"`
 }
 
-// FindAccount resolves an account id.
-func (m *Manifest) FindAccount(id string) (Account, error) {
+// FindAccount resolves an account name.
+func (m *Manifest) FindAccount(name string) (Account, error) {
 	for _, a := range m.Accounts {
-		if a.ID == id {
+		if a.Name == name {
 			return a, nil
 		}
 	}
-	return Account{}, fmt.Errorf("account %q not found in the manifest", id)
+	return Account{}, fmt.Errorf("account %q not found in the manifest", name)
 }
 
 // Load reads and validates a token manifest.
@@ -137,15 +118,15 @@ func Load(path string) (*Manifest, error) {
 	}
 	seen := make(map[string]bool, len(m.Accounts))
 	for i, a := range m.Accounts {
-		if a.ID == "" {
-			return nil, fmt.Errorf("%s: accounts[%d]: id is required", path, i)
+		if a.Name == "" {
+			return nil, fmt.Errorf("%s: accounts[%d]: name is required", path, i)
 		}
-		if seen[a.ID] {
-			return nil, fmt.Errorf("%s: duplicate account id %q", path, a.ID)
+		if seen[a.Name] {
+			return nil, fmt.Errorf("%s: duplicate account name %q", path, a.Name)
 		}
-		seen[a.ID] = true
+		seen[a.Name] = true
 		if err := validateAccount(a); err != nil {
-			return nil, fmt.Errorf("%s: account %q: %w", path, a.ID, err)
+			return nil, fmt.Errorf("%s: account %q: %w", path, a.Name, err)
 		}
 	}
 	return &m, nil
@@ -155,29 +136,43 @@ func validateAccount(a Account) error {
 	if a.Key != "" && !nkeys.IsValidPublicAccountKey(a.Key) {
 		return fmt.Errorf("key is not a valid account public key (expected an A... nkey)")
 	}
+	if err := validateWindow(a.Expires, a.NotBefore); err != nil {
+		return err
+	}
 	seen := make(map[string]bool, len(a.Users))
 	for i, u := range a.Users {
-		if u.ID == "" {
-			return fmt.Errorf("users[%d]: id is required", i)
+		if u.Name == "" {
+			return fmt.Errorf("users[%d]: name is required", i)
 		}
-		if seen[u.ID] {
-			return fmt.Errorf("duplicate user id %q", u.ID)
+		if seen[u.Name] {
+			return fmt.Errorf("duplicate user name %q", u.Name)
 		}
-		seen[u.ID] = true
+		seen[u.Name] = true
 		if u.Bearer && u.Key != "" {
-			return fmt.Errorf("user %q: bearer and key are mutually exclusive", u.ID)
+			return fmt.Errorf("user %q: bearer and key are mutually exclusive", u.Name)
 		}
 		if u.Key != "" && !nkeys.IsValidPublicUserKey(u.Key) && !nkeys.IsValidPublicAccountKey(u.Key) {
-			return fmt.Errorf("user %q: key is not a valid user public key", u.ID)
+			return fmt.Errorf("user %q: key is not a valid user public key", u.Name)
+		}
+		if err := validateWindow(u.Expires, u.NotBefore); err != nil {
+			return fmt.Errorf("user %q: %w", u.Name, err)
 		}
 		for _, s := range u.Scopes {
 			if s == token.ScopeBearer {
 				continue
 			}
 			if !token.Covered(a.Scopes, s) {
-				return fmt.Errorf("user %q: scope %q is not covered by the account scopes", u.ID, s)
+				return fmt.Errorf("user %q: scope %q is not covered by the account scopes", u.Name, s)
 			}
 		}
+	}
+	return nil
+}
+
+// validateWindow rejects a validity window that is empty on its face.
+func validateWindow(expires, notBefore time.Time) error {
+	if !expires.IsZero() && !notBefore.IsZero() && !expires.After(notBefore) {
+		return fmt.Errorf("expires %s is not after not_before %s", expires.Format(time.RFC3339), notBefore.Format(time.RFC3339))
 	}
 	return nil
 }

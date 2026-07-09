@@ -34,7 +34,7 @@ func main() {
 	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := token.Issue(operator, "acme", accountPub, []string{"call:/v1/*"}, time.Hour)
+	tok, err := token.Issue(operator, "acme", accountPub, []string{"call:/v1/*"}, token.WithTTL(time.Hour))
 	check(err)
 	claims, err := token.Verify(tok, operatorPub)
 	check(err)

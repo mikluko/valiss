@@ -56,7 +56,7 @@ func TestMethodScope(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, _ := tenantKeys(t)
 	method := "/example.v1.WidgetService/CreateWidget"
-	tok, err := token.Issue(op, "acme", tenantPub, []string{ScopeForMethod(method)}, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, []string{ScopeForMethod(method)}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	now := time.Now()
@@ -82,7 +82,7 @@ func TestMethodScope(t *testing.T) {
 func TestAuthenticate(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, _ := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, []string{"read"}, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, []string{"read"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := token.Verify(tok, opPub)
 	require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestAuthenticate(t *testing.T) {
 func TestCredentials(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, nil, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, nil, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	c, err := NewCredentials(creds.Creds{AccountToken: tok, Seed: seed})
@@ -167,7 +167,7 @@ func TestBearerCredentials(t *testing.T) {
 	handler := func(context.Context, any) (any, error) { return nil, nil }
 
 	t.Run("bearer scope allows token-only call", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
+		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, token.WithTTL(time.Hour))
 		require.NoError(t, err)
 		c, err := NewCredentials(creds.Creds{AccountToken: tok})
 		require.NoError(t, err)
@@ -179,7 +179,7 @@ func TestBearerCredentials(t *testing.T) {
 	})
 
 	t.Run("no bearer scope denies token-only call", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
+		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = auth.UnaryInterceptor()(authContext(token.Request{AccountToken: tok}), nil, unaryInfo("/svc/M"), handler)
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
@@ -191,7 +191,7 @@ func TestBearerCredentials(t *testing.T) {
 func TestCredsEndToEnd(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	parsed, err := creds.Parse(creds.Format(creds.Creds{AccountToken: tok, Seed: seed}))
@@ -218,9 +218,9 @@ func TestUserChain(t *testing.T) {
 	userSeed, err := user.Seed()
 	require.NoError(t, err)
 
-	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/svc/M"}, time.Hour)
+	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/svc/M"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed})

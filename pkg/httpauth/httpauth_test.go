@@ -55,7 +55,7 @@ func newClient(t *testing.T, b creds.Creds) *http.Client {
 func TestMiddlewareTransport(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())
@@ -85,7 +85,7 @@ func TestMiddlewareTransport(t *testing.T) {
 func TestMiddlewareScope(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:/v1/checks"}, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:/v1/checks"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())
@@ -117,7 +117,7 @@ func TestBearerTransport(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("bearer scope allows token-only request", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
+		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, token.WithTTL(time.Hour))
 		require.NoError(t, err)
 		client := newClient(t, creds.Creds{AccountToken: tok})
 		resp, err := client.Get(srv.URL)
@@ -130,7 +130,7 @@ func TestBearerTransport(t *testing.T) {
 	})
 
 	t.Run("no bearer scope denies token-only request", func(t *testing.T) {
-		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
+		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, token.WithTTL(time.Hour))
 		require.NoError(t, err)
 		client := newClient(t, creds.Creds{AccountToken: tok})
 		resp, err := client.Get(srv.URL)
@@ -145,7 +145,7 @@ func TestBearerTransport(t *testing.T) {
 func TestMiddlewareRejections(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, seed := tenantKeys(t)
-	tok, err := token.Issue(op, "acme", tenantPub, nil, time.Hour)
+	tok, err := token.Issue(op, "acme", tenantPub, nil, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := token.Verify(tok, opPub)
 	require.NoError(t, err)
@@ -204,9 +204,9 @@ func TestUserChain(t *testing.T) {
 	userSeed, err := user.Seed()
 	require.NoError(t, err)
 
-	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, time.Hour)
+	acctTok, err := token.Issue(op, "acme", accountPub, []string{"call:*"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/v1/checks"}, time.Hour)
+	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/v1/checks"}, token.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	mw := NewMiddleware(token.NewVerifier(opPub, token.AllowAll{}), WithPathScope())

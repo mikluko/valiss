@@ -165,6 +165,9 @@ func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 	if claims.Expired(now, v.skew) {
 		return nil, errors.New("valiss: account token expired")
 	}
+	if claims.NotYetValid(now, v.skew) {
+		return nil, errors.New("valiss: account token not yet valid")
+	}
 	if !v.allowlist.Allowed(claims.ID) {
 		return nil, errors.New("valiss: account token not recognized")
 	}
@@ -175,6 +178,9 @@ func (v *Verifier) VerifyRequest(req Request) (*Claims, error) {
 		}
 		if user.Expired(now, v.skew) {
 			return nil, errors.New("valiss: user token expired")
+		}
+		if user.NotYetValid(now, v.skew) {
+			return nil, errors.New("valiss: user token not yet valid")
 		}
 		scopes := make([]string, 0, len(user.Scopes))
 		for _, s := range user.Scopes {

@@ -105,7 +105,7 @@ credentials to stdout and their metadata to stderr:
 $ export VALISS_SEED_OD25ZJ...=SOAI2X...   # operator seed
 $ valiss creds acme > acme.creds
 account:
-  id: acme
+  name: acme
   key: AC4JQU...
   jti: FVIENQPFQY...        # add to the server allowlist
   expires: 2026-08-08T09:00:00Z
@@ -123,7 +123,7 @@ e.g. from static configuration:
 $ export VALISS_SEED_AC4JQU...=SAAK7G...   # account seed
 $ valiss creds acme/alice > alice.creds
 user:
-  id: alice
+  name: alice
   key: UDKED...
   jti: NQLQXOWTGN...
   expires: 2026-07-09T13:00:00Z
@@ -146,16 +146,17 @@ An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
 # valiss.yaml — public data only, safe to commit
 operator: ODZ6U...          # trust anchor; seed from VALISS_SEED_<this key>
 accounts:
-  - id: acme
+  - name: acme
     key: ABPZ7...            # account public key from `valiss keygen account`
     scopes: ["call:/pkg.Svc/*"]
-    ttl: 720h                # optional, defaults to 720h
+    expires: 2026-08-08T00:00:00Z   # optional; omitted = never expires
     users:
-      - id: alice
+      - name: alice
         key: UDGH3...        # user public key; seed stays with the user
         scopes: ["call:/pkg.Svc/Get"]
-        ttl: 1h              # optional, defaults to 1h
-      - id: carol
+        expires: 2026-07-16T00:00:00Z
+        not_before: 2026-07-09T00:00:00Z  # optional activation time
+      - name: carol
         bearer: true         # keyless token-only credential
         scopes: ["call:/pkg.Svc/List"]
 ```

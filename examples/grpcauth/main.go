@@ -44,7 +44,7 @@ func main() {
 
 	checkScope := grpcauth.ScopeForMethod(healthpb.Health_Check_FullMethodName)
 	listScope := grpcauth.ScopeForMethod(healthpb.Health_List_FullMethodName)
-	tok, err := token.Issue(operator, "acme", accountPub, []string{checkScope, listScope}, time.Hour)
+	tok, err := token.Issue(operator, "acme", accountPub, []string{checkScope, listScope}, token.WithTTL(time.Hour))
 	check(err)
 	claims, err := token.Verify(tok, operatorPub)
 	check(err)
@@ -83,7 +83,7 @@ func main() {
 	check(err)
 	userSeed, err := user.Seed()
 	check(err)
-	userTok, err := token.IssueUser(account, "alice", userPub, []string{checkScope}, time.Hour)
+	userTok, err := token.IssueUser(account, "alice", userPub, []string{checkScope}, token.WithTTL(time.Hour))
 	check(err)
 
 	userConn := dial(lis, creds.Creds{AccountToken: tok, UserToken: userTok, Seed: userSeed})

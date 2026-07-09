@@ -119,8 +119,9 @@ func cmdKeygen(out, msg io.Writer, args []string) error {
 // tokenMeta is the minted-token section of the creds command's metadata
 // output.
 type tokenMeta struct {
-	// ID is the entity id the token binds.
-	ID string `yaml:"id"`
+	// Name is the entity the token binds (the token's name field; its sub
+	// claim carries the key).
+	Name string `yaml:"name"`
 	// Key is the entity's nkey public key; absent on bearer entries.
 	Key string `yaml:"key,omitempty"`
 	// Generated marks a key pair created by this invocation; its seed ships
@@ -129,8 +130,11 @@ type tokenMeta struct {
 	// JTI is the token id; the account jti is what the server-side allowlist
 	// accepts.
 	JTI string `yaml:"jti"`
-	// Expires is the token expiry, RFC3339.
-	Expires string `yaml:"expires"`
+	// Expires is the token expiry, RFC3339; absent means never.
+	Expires string `yaml:"expires,omitempty"`
+	// NotBefore is the token activation time, RFC3339; absent means
+	// immediately valid.
+	NotBefore string `yaml:"not_before,omitempty"`
 }
 
 // credsMeta is the creds command's metadata output, written to stderr as
@@ -150,8 +154,8 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("creds requires exactly one ACCOUNT[/USER] argument")
 	}
-	acctID, userID, wantUser := strings.Cut(fs.Arg(0), "/")
-	if acctID == "" || (wantUser && userID == "") {
+	acctName, userName, wantUser := strings.Cut(fs.Arg(0), "/")
+	if acctName == "" || (wantUser && userName == "") {
 		return fmt.Errorf("bad entity path %q: want ACCOUNT or ACCOUNT/USER", fs.Arg(0))
 	}
 	if *asBundle && !wantUser {
@@ -162,7 +166,7 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if err != nil {
 		return err
 	}
-	acct, err := m.FindAccount(acctID)
+	acct, err := m.FindAccount(acctName)
 	if err != nil {
 		return err
 	}
@@ -179,12 +183,36 @@ func cmdCreds(out, msg io.Writer, args []string) error {
 	if !wantUser {
 		return mintAccount(out, msg, operator, acct)
 	}
-	return mintUser(out, msg, operator, acct, userID)
+	return mintUser(out, msg, operator, acct, userName)
+}
+
+// validity turns the manifest's absolute boundaries into issue options.
+func validity(expires, notBefore time.Time) []token.IssueOption {
+	var opts []token.IssueOption
+	if !expires.IsZero() {
+		opts = append(opts, token.WithExpiry(expires))
+	}
+	if !notBefore.IsZero() {
+		opts = append(opts, token.WithNotBefore(notBefore))
+	}
+	return opts
+}
+
+// checkNotExpired refuses to mint a manifest entry whose window has already
+// closed.
+func checkNotExpired(name string, expires time.Time) error {
+	if !expires.IsZero() && !expires.After(time.Now()) {
+		return fmt.Errorf("%q expired %s: update the manifest before minting", name, expires.Format(time.RFC3339))
+	}
+	return nil
 }
 
 // mintAccount writes account-level creds: the operator-signed account
 // token plus the account seed.
 func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account) error {
+	if err := checkNotExpired(acct.Name, acct.Expires); err != nil {
+		return err
+	}
 	subject, generated, err := subjectKey(acct.Key, nkeys.CreateAccount)
 	if err != nil {
 		return err
@@ -194,8 +222,8 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 		return err
 	}
 	tok, meta, err := mintToken(func() (string, error) {
-		return token.Issue(operator, acct.ID, pub, acct.Scopes, acct.TTLOrDefault())
-	}, acct.ID, pub, generated)
+		return token.Issue(operator, acct.Name, pub, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
+	}, acct.Name, pub, generated)
 	if err != nil {
 		return err
 	}
@@ -211,13 +239,19 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 // user seed (absent for bearer users). With a non-nil operator (-bundle)
 // the creds also embed a freshly signed account token; without it the
 // server resolves the account token by other means.
-func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account, userID string) error {
-	user, ok := acct.User(userID)
+func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account, userName string) error {
+	user, ok := acct.User(userName)
 	if !ok {
-		return fmt.Errorf("user %q not found under account %q", userID, acct.ID)
+		return fmt.Errorf("user %q not found under account %q", userName, acct.Name)
+	}
+	if err := checkNotExpired(acct.Name, acct.Expires); err != nil {
+		return err
+	}
+	if err := checkNotExpired(acct.Name+"/"+user.Name, user.Expires); err != nil {
+		return err
 	}
 	if acct.Key == "" {
-		return fmt.Errorf("account %q has no key in the manifest: user tokens are signed by the account seed, add the key and provide VALISS_SEED_<key>", acct.ID)
+		return fmt.Errorf("account %q has no key in the manifest: user tokens are signed by the account seed, add the key and provide VALISS_SEED_<key>", acct.Name)
 	}
 	account, err := seedFromEnv(acct.Key)
 	if err != nil {
@@ -230,8 +264,8 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 	)
 	if operator != nil {
 		tok, meta, err := mintToken(func() (string, error) {
-			return token.Issue(operator, acct.ID, acct.Key, acct.Scopes, acct.TTLOrDefault())
-		}, acct.ID, acct.Key, false)
+			return token.Issue(operator, acct.Name, acct.Key, acct.Scopes, validity(acct.Expires, acct.NotBefore)...)
+		}, acct.Name, acct.Key, false)
 		if err != nil {
 			return err
 		}
@@ -261,8 +295,8 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 		generated = gen
 	}
 	userTok, userMeta, err := mintToken(func() (string, error) {
-		return token.IssueUser(account, user.ID, userPub, scopes, user.TTLOrDefault())
-	}, user.ID, userPub, generated)
+		return token.IssueUser(account, user.Name, userPub, scopes, validity(user.Expires, user.NotBefore)...)
+	}, user.Name, userPub, generated)
 	if err != nil {
 		return err
 	}
@@ -272,25 +306,31 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 	return writeMeta(msg, credsMeta{Account: acctMeta, User: &userMeta})
 }
 
-// mintToken mints a token via issue, decodes it back for its jti and expiry,
-// and builds the metadata entry.
-func mintToken(issue func() (string, error), id, pub string, generated bool) (string, tokenMeta, error) {
+// mintToken mints a token via issue, decodes it back for its jti and
+// validity, and builds the metadata entry.
+func mintToken(issue func() (string, error), name, pub string, generated bool) (string, tokenMeta, error) {
 	tok, err := issue()
 	if err != nil {
-		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", id, err)
+		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", name, err)
 	}
 	// The token was minted in-process; decoding only re-reads its claims.
 	gc, err := jwt.DecodeGeneric(tok)
 	if err != nil {
-		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", id, err)
+		return "", tokenMeta{}, fmt.Errorf("mint %q: %w", name, err)
 	}
-	return tok, tokenMeta{
-		ID:        id,
+	meta := tokenMeta{
+		Name:      name,
 		Key:       pub,
 		Generated: generated,
 		JTI:       gc.ID,
-		Expires:   time.Unix(gc.Expires, 0).UTC().Format(time.RFC3339),
-	}, nil
+	}
+	if gc.Expires != 0 {
+		meta.Expires = time.Unix(gc.Expires, 0).UTC().Format(time.RFC3339)
+	}
+	if gc.NotBefore != 0 {
+		meta.NotBefore = time.Unix(gc.NotBefore, 0).UTC().Format(time.RFC3339)
+	}
+	return tok, meta, nil
 }
 
 // subjectKey resolves the subject key pair: from the environment when the
