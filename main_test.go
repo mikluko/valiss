@@ -125,7 +125,7 @@ func TestCredsAccount(t *testing.T) {
 	assert.Empty(t, parsed.UserToken)
 	assert.Equal(t, f.acctSeed, string(parsed.Seed), "bundle carries the env-provided account seed")
 
-	claims, err := token.Verify(parsed.Token, f.opPub)
+	claims, err := token.Verify(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, f.acctPub, claims.PubKey)
@@ -150,7 +150,7 @@ func TestCredsGeneratedAccount(t *testing.T) {
 	pub, err := kp.PublicKey()
 	require.NoError(t, err)
 
-	claims, err := token.Verify(parsed.Token, f.opPub)
+	claims, err := token.Verify(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	assert.Equal(t, pub, claims.PubKey, "token binds the freshly generated key")
 	assert.True(t, meta.Account.Generated)
@@ -171,7 +171,7 @@ func TestCredsUser(t *testing.T) {
 
 	parsed, meta := runCreds(t, f, "acme/alice")
 	assert.Equal(t, f.userSeed, string(parsed.Seed))
-	assert.Empty(t, parsed.Token, "account token omitted by default")
+	assert.Empty(t, parsed.AccountToken, "account token omitted by default")
 
 	user, err := token.Verify(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
@@ -210,7 +210,7 @@ func TestCredsUserBundle(t *testing.T) {
 	parsed, meta := runCreds(t, f, "acme/alice", "-bundle")
 	assert.Equal(t, f.userSeed, string(parsed.Seed))
 
-	acct, err := token.Verify(parsed.Token, f.opPub)
+	acct, err := token.Verify(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	user, err := token.Verify(parsed.UserToken, f.acctPub)
 	require.NoError(t, err)
@@ -226,7 +226,7 @@ func TestCredsUserBundle(t *testing.T) {
 	require.NoError(t, err)
 	ts, sig, err := token.SignRequest(kp, time.Now())
 	require.NoError(t, err)
-	claims, err := v.VerifyCredential(token.Credential{Token: parsed.Token, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
+	claims, err := v.VerifyCredential(token.Credential{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, "alice", claims.UserID)
@@ -284,10 +284,10 @@ func TestCredsBearerUser(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, user.HasScope(token.ScopeBearer), "bearer scope is appended automatically")
 
-	acct, err := token.Verify(parsed.Token, f.opPub)
+	acct, err := token.Verify(parsed.AccountToken, f.opPub)
 	require.NoError(t, err)
 	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID))
-	claims, err := v.VerifyCredential(token.Credential{Token: parsed.Token, UserToken: parsed.UserToken})
+	claims, err := v.VerifyCredential(token.Credential{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken})
 	require.NoError(t, err)
 	assert.Equal(t, "carol", claims.UserID)
 }

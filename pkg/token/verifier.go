@@ -8,10 +8,10 @@ import (
 // Header field names carrying the tenant credential on each request. Used as
 // gRPC metadata keys and HTTP header names alike.
 const (
-	HeaderToken     = "valiss-tenant-token"
-	HeaderUserToken = "valiss-user-token"
-	HeaderTimestamp = "valiss-tenant-timestamp"
-	HeaderSignature = "valiss-tenant-signature"
+	HeaderAccountToken = "valiss-account-token"
+	HeaderUserToken    = "valiss-user-token"
+	HeaderTimestamp    = "valiss-timestamp"
+	HeaderSignature    = "valiss-signature"
 )
 
 // ScopeBearer is the scope a token must carry for its holder to make bearer
@@ -23,8 +23,8 @@ const ScopeBearer = "bearer"
 
 // Credential is the per-request material a transport extracts from headers.
 type Credential struct {
-	// Token is the operator-signed tenant token.
-	Token string
+	// AccountToken is the operator-signed account token.
+	AccountToken string
 	// UserToken is the account-signed user token on chain credentials; empty
 	// when the tenant itself makes the request.
 	UserToken string
@@ -41,8 +41,8 @@ type Credential struct {
 type ClaimsValidator func(cred Credential, claims *Claims) error
 
 // AccountTokenResolver supplies the operator-signed account token for an
-// account public key, serving requests that carry only a user token (creds
-// minted with -no-account-token). The resolved token goes through the full
+// account public key, serving requests that carry only a user token (the
+// default creds shape). The resolved token goes through the full
 // verification: operator signature, expiry, allowlist.
 type AccountTokenResolver func(accountPubKey string) (string, error)
 
@@ -71,7 +71,7 @@ func StaticAccountTokens(tokens ...string) (AccountTokenResolver, error) {
 	}, nil
 }
 
-// Verifier checks the full per-request credential: tenant token signature
+// Verifier checks the full per-request credential: account token signature
 // against the pinned operator key, expiry, allowlist membership, the optional
 // user-token chain, and the request signature within the skew window.
 // Requests without a signature pass only when the effective token grants
@@ -130,9 +130,9 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 // effective claims. Any error means the request must be rejected as
 // unauthenticated.
 //
-// A credential with a user token is verified as a chain: the tenant token
-// against the operator key and the allowlist, then the user token against the
-// tenant token's bound account key. The effective scopes are the user's
+// A credential with a user token is verified as a chain: the account token
+// against the operator key and the allowlist, then the user token against
+// the account token's bound key. The effective scopes are the user's
 // scopes clamped to those the tenant holds, so a tenant can never delegate
 // more than it has; ScopeBearer passes through unclamped because it selects
 // an authentication mode, not an authorization grant.
@@ -140,12 +140,12 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 // An empty timestamp and signature is a bearer request, accepted only when
 // the effective token grants ScopeBearer.
 func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
-	if cred.Token == "" {
+	if cred.AccountToken == "" {
 		if cred.UserToken == "" {
-			return nil, errors.New("valiss: missing tenant credential")
+			return nil, errors.New("valiss: missing credentials")
 		}
 		if v.resolver == nil {
-			return nil, errors.New("valiss: request carries no tenant token and the server has no account token resolver")
+			return nil, errors.New("valiss: request carries no account token and the server has no account token resolver")
 		}
 		accountPubKey, err := IssuerOf(cred.UserToken)
 		if err != nil {
@@ -155,18 +155,18 @@ func (v *Verifier) VerifyCredential(cred Credential) (*Claims, error) {
 		if err != nil {
 			return nil, err
 		}
-		cred.Token = tok
+		cred.AccountToken = tok
 	}
-	claims, err := Verify(cred.Token, v.operatorPubKey)
+	claims, err := Verify(cred.AccountToken, v.operatorPubKey)
 	if err != nil {
 		return nil, err
 	}
 	now := v.now()
 	if claims.Expired(now, v.skew) {
-		return nil, errors.New("valiss: tenant token expired")
+		return nil, errors.New("valiss: account token expired")
 	}
 	if !v.allowlist.Allowed(claims.ID) {
-		return nil, errors.New("valiss: tenant token not recognized")
+		return nil, errors.New("valiss: account token not recognized")
 	}
 	if cred.UserToken != "" {
 		user, err := Verify(cred.UserToken, claims.PubKey)

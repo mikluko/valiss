@@ -34,15 +34,15 @@ import (
 // Scopes carried in the token's custom claims.
 const (
 	scopesClaim = "scopes"
-	pubKeyClaim = "tenant_key"
+	pubKeyClaim = "subject_key"
 )
 
-// Claims is the verified content of a tenant token.
+// Claims is the verified content of a token.
 type Claims struct {
 	// TenantID identifies the tenant; it segments all stored data.
 	TenantID string
 	// UserID identifies the end user on chain-verified requests, where an
-	// account-signed user token accompanies the tenant token. Empty when the
+	// account-signed user token accompanies the account token. Empty when the
 	// tenant itself made the request.
 	UserID string
 	// PubKey is the tenant's nkey public key that must sign requests.
@@ -57,11 +57,11 @@ type Claims struct {
 	ExpiresAt time.Time
 }
 
-// Issue mints a tenant token signed by the operator key. tenantPubKey is the
+// Issue mints an account token signed by the operator key. tenantPubKey is the
 // tenant's nkey public key; the tenant signs requests with the matching seed.
 func Issue(operator nkeys.KeyPair, tenantID, tenantPubKey string, scopes []string, ttl time.Duration) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
-		return "", fmt.Errorf("valiss: tenant tokens must be signed by an operator-type nkey (expected an SO... seed)")
+		return "", fmt.Errorf("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
 	if !nkeys.IsValidPublicUserKey(tenantPubKey) && !nkeys.IsValidPublicAccountKey(tenantPubKey) {
 		return "", fmt.Errorf("valiss: invalid tenant public key")
@@ -127,7 +127,7 @@ func Verify(token, issuerPubKey string) (*Claims, error) {
 	pubKey, _ := gc.Data[pubKeyClaim].(string)
 	scopes := toStrings(gc.Data[scopesClaim])
 	if pubKey == "" && !slices.Contains(scopes, ScopeBearer) {
-		return nil, errors.New("valiss: token missing tenant key")
+		return nil, errors.New("valiss: token missing subject key")
 	}
 	claims := &Claims{
 		TenantID: gc.Subject,

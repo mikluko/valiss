@@ -13,21 +13,21 @@ const testToken = "eyJhbGciOiJlZDI1NTE5LW5rZXkifQ.payload.signature"
 
 func TestRoundTrip(t *testing.T) {
 	t.Run("account creds", func(t *testing.T) {
-		b := Creds{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
+		b := Creds{AccountToken: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
 		got, err := Parse(Format(b))
 		require.NoError(t, err)
 		assert.Equal(t, b, got)
 	})
 
 	t.Run("user bundle (embedded account token)", func(t *testing.T) {
-		b := Creds{Token: testToken, UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
+		b := Creds{AccountToken: testToken, UserToken: testToken + "u", Seed: []byte("SUAEXAMPLESEEDVALUE")}
 		got, err := Parse(Format(b))
 		require.NoError(t, err)
 		assert.Equal(t, b, got)
 	})
 
 	t.Run("bearer creds have no seed section", func(t *testing.T) {
-		b := Creds{Token: testToken, UserToken: testToken + "u"}
+		b := Creds{AccountToken: testToken, UserToken: testToken + "u"}
 		rendered := Format(b)
 		assert.NotContains(t, rendered, "SEED")
 		got, err := Parse(rendered)
@@ -46,7 +46,7 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestLoad(t *testing.T) {
-	b := Creds{Token: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
+	b := Creds{AccountToken: testToken, Seed: []byte("SAAEXAMPLESEEDVALUE")}
 	path := filepath.Join(t.TempDir(), "acme.creds")
 	require.NoError(t, os.WriteFile(path, []byte(Format(b)), 0o600))
 

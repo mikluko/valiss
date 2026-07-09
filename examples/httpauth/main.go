@@ -38,7 +38,7 @@ func main() {
 	check(err)
 	claims, err := token.Verify(tok, operatorPub)
 	check(err)
-	rendered := creds.Format(creds.Creds{Token: tok, Seed: accountSeed})
+	rendered := creds.Format(creds.Creds{AccountToken: tok, Seed: accountSeed})
 
 	// Server side: the operator public key and the allowlist are all the
 	// server needs; it never sees any seeds.

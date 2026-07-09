@@ -18,10 +18,10 @@ import (
 // the effective token grants token.ScopeBearer. Use
 // grpc.WithPerRPCCredentials on the client.
 type Credentials struct {
-	token     string
-	userToken string
-	subject   nkeys.KeyPair
-	now       func() time.Time
+	accountToken string
+	userToken    string
+	subject      nkeys.KeyPair
+	now          func() time.Time
 	// requireTLS mirrors the transport: gRPC refuses to send per-RPC
 	// credentials over an insecure connection unless this is false.
 	requireTLS bool
@@ -31,7 +31,7 @@ type Credentials struct {
 // they carry and the seed matching the effective token's bound key (nil
 // for bearer creds).
 func NewCredentials(b creds.Creds) (*Credentials, error) {
-	c := &Credentials{token: b.Token, userToken: b.UserToken, now: time.Now, requireTLS: true}
+	c := &Credentials{accountToken: b.AccountToken, userToken: b.UserToken, now: time.Now, requireTLS: true}
 	if len(b.Seed) > 0 {
 		subject, err := nkeys.FromSeed(b.Seed)
 		if err != nil {
@@ -51,8 +51,8 @@ func (c *Credentials) AllowInsecure() *Credentials {
 
 func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
 	md := map[string]string{}
-	if c.token != "" {
-		md[token.HeaderToken] = c.token
+	if c.accountToken != "" {
+		md[token.HeaderAccountToken] = c.accountToken
 	}
 	if c.userToken != "" {
 		md[token.HeaderUserToken] = c.userToken

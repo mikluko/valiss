@@ -17,18 +17,18 @@ import (
 // effective token grants token.ScopeBearer. Set it as (or wrap it around)
 // http.Client.Transport.
 type Transport struct {
-	base      http.RoundTripper
-	token     string
-	userToken string
-	subject   nkeys.KeyPair
-	now       func() time.Time
+	base         http.RoundTripper
+	accountToken string
+	userToken    string
+	subject      nkeys.KeyPair
+	now          func() time.Time
 }
 
 // NewTransport builds a client transport from parsed creds: the tokens
 // they carry and the seed matching the effective token's bound key (nil
 // for bearer creds). A nil base means http.DefaultTransport.
 func NewTransport(b creds.Creds, base http.RoundTripper) (*Transport, error) {
-	t := &Transport{base: base, token: b.Token, userToken: b.UserToken, now: time.Now}
+	t := &Transport{base: base, accountToken: b.AccountToken, userToken: b.UserToken, now: time.Now}
 	if len(b.Seed) > 0 {
 		subject, err := nkeys.FromSeed(b.Seed)
 		if err != nil {
@@ -42,8 +42,8 @@ func NewTransport(b creds.Creds, base http.RoundTripper) (*Transport, error) {
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// RoundTrippers must not mutate the caller's request.
 	req = req.Clone(req.Context())
-	if t.token != "" {
-		req.Header.Set(token.HeaderToken, t.token)
+	if t.accountToken != "" {
+		req.Header.Set(token.HeaderAccountToken, t.accountToken)
 	}
 	if t.userToken != "" {
 		req.Header.Set(token.HeaderUserToken, t.userToken)

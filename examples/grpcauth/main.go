@@ -68,7 +68,7 @@ func main() {
 	// Client side, account level: per-RPC credentials sign every call with
 	// the account seed. AllowInsecure only because the in-memory pipe has no
 	// TLS.
-	conn := dial(lis, creds.Creds{Token: tok, Seed: accountSeed})
+	conn := dial(lis, creds.Creds{AccountToken: tok, Seed: accountSeed})
 	defer conn.Close()
 
 	resp, err := healthpb.NewHealthClient(conn).Check(context.Background(), &healthpb.HealthCheckRequest{})
@@ -86,7 +86,7 @@ func main() {
 	userTok, err := token.IssueUser(account, "alice", userPub, []string{checkScope}, time.Hour)
 	check(err)
 
-	userConn := dial(lis, creds.Creds{Token: tok, UserToken: userTok, Seed: userSeed})
+	userConn := dial(lis, creds.Creds{AccountToken: tok, UserToken: userTok, Seed: userSeed})
 	defer userConn.Close()
 
 	resp, err = healthpb.NewHealthClient(userConn).Check(context.Background(), &healthpb.HealthCheckRequest{})

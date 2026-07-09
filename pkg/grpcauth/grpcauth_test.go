@@ -40,10 +40,10 @@ func tenantKeys(t *testing.T) (nkeys.KeyPair, string, []byte) {
 // authContext builds an incoming-metadata context as the interceptor sees it.
 func authContext(cred token.Credential) context.Context {
 	md := metadata.New(map[string]string{
-		token.HeaderToken:     cred.Token,
-		token.HeaderUserToken: cred.UserToken,
-		token.HeaderTimestamp: cred.Timestamp,
-		token.HeaderSignature: cred.Signature,
+		token.HeaderAccountToken: cred.AccountToken,
+		token.HeaderUserToken:    cred.UserToken,
+		token.HeaderTimestamp:    cred.Timestamp,
+		token.HeaderSignature:    cred.Signature,
 	})
 	return metadata.NewIncomingContext(context.Background(), md)
 }
@@ -68,12 +68,12 @@ func TestMethodScope(t *testing.T) {
 	handler := func(context.Context, any) (any, error) { return nil, nil }
 
 	t.Run("granted method allowed", func(t *testing.T) {
-		_, err := auth.UnaryInterceptor()(authContext(token.Credential{Token: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo(method), handler)
+		_, err := auth.UnaryInterceptor()(authContext(token.Credential{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo(method), handler)
 		assert.NoError(t, err)
 	})
 
 	t.Run("other method denied", func(t *testing.T) {
-		_, err := auth.UnaryInterceptor()(authContext(token.Credential{Token: tok, Timestamp: ts, Signature: sig}), nil,
+		_, err := auth.UnaryInterceptor()(authContext(token.Credential{AccountToken: tok, Timestamp: ts, Signature: sig}), nil,
 			unaryInfo("/example.v1.WidgetService/DeleteWidget"), handler)
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	})
@@ -96,7 +96,7 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("authenticated request injects tenant", func(t *testing.T) {
 		var got *token.Claims
-		_, err := auth.UnaryInterceptor()(authContext(token.Credential{Token: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
+		_, err := auth.UnaryInterceptor()(authContext(token.Credential{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
 			func(ctx context.Context, _ any) (any, error) {
 				c, ok := token.TenantFromContext(ctx)
 				assert.True(t, ok)
@@ -122,7 +122,7 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("token not in allowlist", func(t *testing.T) {
 		strict := NewAuthenticator(token.NewVerifier(opPub, token.NewStaticAllowlist("other"), clock))
-		_, err := strict.UnaryInterceptor()(authContext(token.Credential{Token: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
+		_, err := strict.UnaryInterceptor()(authContext(token.Credential{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
 			func(context.Context, any) (any, error) { return nil, nil })
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 		assert.Contains(t, status.Convert(err).Message(), "not recognized")
@@ -131,7 +131,7 @@ func TestAuthenticate(t *testing.T) {
 	t.Run("stale request signature", func(t *testing.T) {
 		staleTS, staleSig, err := token.SignRequest(tenant, now.Add(-time.Hour))
 		require.NoError(t, err)
-		err = call(authContext(token.Credential{Token: tok, Timestamp: staleTS, Signature: staleSig}))
+		err = call(authContext(token.Credential{AccountToken: tok, Timestamp: staleTS, Signature: staleSig}))
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 	})
 }
@@ -142,13 +142,13 @@ func TestCredentials(t *testing.T) {
 	tok, err := token.Issue(op, "acme", tenantPub, nil, time.Hour)
 	require.NoError(t, err)
 
-	c, err := NewCredentials(creds.Creds{Token: tok, Seed: seed})
+	c, err := NewCredentials(creds.Creds{AccountToken: tok, Seed: seed})
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(context.Background())
 	require.NoError(t, err)
 
 	auth := NewAuthenticator(token.NewVerifier(opPub, token.AllowAll{}))
-	ctx := authContext(token.Credential{Token: md[token.HeaderToken], Timestamp: md[token.HeaderTimestamp], Signature: md[token.HeaderSignature]})
+	ctx := authContext(token.Credential{AccountToken: md[token.HeaderAccountToken], Timestamp: md[token.HeaderTimestamp], Signature: md[token.HeaderSignature]})
 	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 		func(ctx context.Context, _ any) (any, error) {
 			_, ok := token.TenantFromContext(ctx)
@@ -169,19 +169,19 @@ func TestBearerCredentials(t *testing.T) {
 	t.Run("bearer scope allows token-only call", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
 		require.NoError(t, err)
-		c, err := NewCredentials(creds.Creds{Token: tok})
+		c, err := NewCredentials(creds.Creds{AccountToken: tok})
 		require.NoError(t, err)
 		md, err := c.GetRequestMetadata(context.Background())
 		require.NoError(t, err)
 		assert.NotContains(t, md, token.HeaderSignature)
-		_, err = auth.UnaryInterceptor()(authContext(token.Credential{Token: md[token.HeaderToken]}), nil, unaryInfo("/svc/M"), handler)
+		_, err = auth.UnaryInterceptor()(authContext(token.Credential{AccountToken: md[token.HeaderAccountToken]}), nil, unaryInfo("/svc/M"), handler)
 		assert.NoError(t, err)
 	})
 
 	t.Run("no bearer scope denies token-only call", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
 		require.NoError(t, err)
-		_, err = auth.UnaryInterceptor()(authContext(token.Credential{Token: tok}), nil, unaryInfo("/svc/M"), handler)
+		_, err = auth.UnaryInterceptor()(authContext(token.Credential{AccountToken: tok}), nil, unaryInfo("/svc/M"), handler)
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 		assert.Contains(t, status.Convert(err).Message(), "bearer scope")
 	})
@@ -194,14 +194,14 @@ func TestCredsEndToEnd(t *testing.T) {
 	tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
 	require.NoError(t, err)
 
-	parsed, err := creds.Parse(creds.Format(creds.Creds{Token: tok, Seed: seed}))
+	parsed, err := creds.Parse(creds.Format(creds.Creds{AccountToken: tok, Seed: seed}))
 	require.NoError(t, err)
 
 	c, err := NewCredentials(parsed)
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(t.Context())
 	require.NoError(t, err)
-	claims, err := token.Verify(md[token.HeaderToken], opPub)
+	claims, err := token.Verify(md[token.HeaderAccountToken], opPub)
 	require.NoError(t, err)
 	assert.NoError(t, token.VerifyRequest(claims.PubKey, md[token.HeaderTimestamp], md[token.HeaderSignature], time.Now(), token.DefaultSkew))
 }
@@ -223,17 +223,17 @@ func TestUserChain(t *testing.T) {
 	userTok, err := token.IssueUser(account, "alice", userPub, []string{"call:/svc/M"}, time.Hour)
 	require.NoError(t, err)
 
-	c, err := NewCredentials(creds.Creds{Token: acctTok, UserToken: userTok, Seed: userSeed})
+	c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed})
 	require.NoError(t, err)
 	md, err := c.GetRequestMetadata(context.Background())
 	require.NoError(t, err)
 
 	auth := NewAuthenticator(token.NewVerifier(opPub, token.AllowAll{}), WithMethodScope())
 	ctx := authContext(token.Credential{
-		Token:     md[token.HeaderToken],
-		UserToken: md[token.HeaderUserToken],
-		Timestamp: md[token.HeaderTimestamp],
-		Signature: md[token.HeaderSignature],
+		AccountToken: md[token.HeaderAccountToken],
+		UserToken:    md[token.HeaderUserToken],
+		Timestamp:    md[token.HeaderTimestamp],
+		Signature:    md[token.HeaderSignature],
 	})
 	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 		func(ctx context.Context, _ any) (any, error) {

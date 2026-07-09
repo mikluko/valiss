@@ -62,7 +62,7 @@ func TestMiddlewareTransport(t *testing.T) {
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	client := newClient(t, creds.Creds{Token: tok, Seed: seed})
+	client := newClient(t, creds.Creds{AccountToken: tok, Seed: seed})
 
 	t.Run("authenticated request reaches handler with tenant", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -92,7 +92,7 @@ func TestMiddlewareScope(t *testing.T) {
 	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
 	defer srv.Close()
 
-	client := newClient(t, creds.Creds{Token: tok, Seed: seed})
+	client := newClient(t, creds.Creds{AccountToken: tok, Seed: seed})
 
 	t.Run("granted path allowed", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")
@@ -119,7 +119,7 @@ func TestBearerTransport(t *testing.T) {
 	t.Run("bearer scope allows token-only request", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{token.ScopeBearer}, time.Hour)
 		require.NoError(t, err)
-		client := newClient(t, creds.Creds{Token: tok})
+		client := newClient(t, creds.Creds{AccountToken: tok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -132,7 +132,7 @@ func TestBearerTransport(t *testing.T) {
 	t.Run("no bearer scope denies token-only request", func(t *testing.T) {
 		tok, err := token.Issue(op, "acme", tenantPub, []string{"call:*"}, time.Hour)
 		require.NoError(t, err)
-		client := newClient(t, creds.Creds{Token: tok})
+		client := newClient(t, creds.Creds{AccountToken: tok})
 		resp, err := client.Get(srv.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -158,7 +158,7 @@ func TestMiddlewareRejections(t *testing.T) {
 		strict := NewMiddleware(token.NewVerifier(opPub, token.NewStaticAllowlist("other")))
 		srv2 := httptest.NewServer(strict(http.HandlerFunc(echoTenant)))
 		defer srv2.Close()
-		resp, err := newClient(t, creds.Creds{Token: tok, Seed: seed}).Get(srv2.URL)
+		resp, err := newClient(t, creds.Creds{AccountToken: tok, Seed: seed}).Get(srv2.URL)
 		require.NoError(t, err)
 		defer resp.Body.Close()
 		body, _ := io.ReadAll(resp.Body)
@@ -171,7 +171,7 @@ func TestMiddlewareRejections(t *testing.T) {
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
-		req.Header.Set(token.HeaderToken, tok)
+		req.Header.Set(token.HeaderAccountToken, tok)
 		req.Header.Set(token.HeaderTimestamp, ts)
 		req.Header.Set(token.HeaderSignature, sig)
 		resp, err := http.DefaultClient.Do(req)
@@ -181,14 +181,14 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 
 	t.Run("transport does not mutate caller request", func(t *testing.T) {
-		transport, err := NewTransport(creds.Creds{Token: tok, Seed: seed}, nil)
+		transport, err := NewTransport(creds.Creds{AccountToken: tok, Seed: seed}, nil)
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
 		resp, err := transport.RoundTrip(req)
 		require.NoError(t, err)
 		resp.Body.Close()
-		assert.Empty(t, req.Header.Get(token.HeaderToken))
+		assert.Empty(t, req.Header.Get(token.HeaderAccountToken))
 	})
 }
 
@@ -217,7 +217,7 @@ func TestUserChain(t *testing.T) {
 	})))
 	defer srv.Close()
 
-	client := newClient(t, creds.Creds{Token: acctTok, UserToken: userTok, Seed: userSeed})
+	client := newClient(t, creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed})
 
 	t.Run("delegated path allowed with user identity", func(t *testing.T) {
 		resp, err := client.Get(srv.URL + "/v1/checks")

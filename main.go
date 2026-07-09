@@ -203,7 +203,7 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Accou
 	if err != nil {
 		return err
 	}
-	fmt.Fprint(out, creds.Format(creds.Creds{Token: tok, Seed: seed}))
+	fmt.Fprint(out, creds.Format(creds.Creds{AccountToken: tok, Seed: seed}))
 	return writeMeta(msg, credsMeta{Account: &meta})
 }
 
@@ -235,7 +235,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct manifest.Account,
 		if err != nil {
 			return err
 		}
-		bundle.Token = tok
+		bundle.AccountToken = tok
 		acctMeta = &meta
 	}
 	scopes := user.Scopes

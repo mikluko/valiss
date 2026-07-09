@@ -2,7 +2,7 @@
 // plus the seed that signs its requests, modeled on the nsc creds format.
 // A creds file is everything a client needs.
 //
-// Account-level creds hold the operator-signed tenant token and the account
+// Account-level creds hold the operator-signed account token and the account
 // seed. User-level creds hold the account-signed user token and the user
 // seed; the server resolves the account token itself. A *bundle* is the kind
 // of creds that additionally carries the upstream account token, for servers
@@ -29,10 +29,10 @@ const (
 
 // Creds is the parsed content of a creds file.
 type Creds struct {
-	// Token is the operator-signed tenant token. User-level creds omit it by
-	// default (the server then resolves the account token by other means,
-	// like static configuration); a bundle (creds -bundle) embeds it.
-	Token string
+	// AccountToken is the operator-signed account token. User-level creds
+	// omit it by default (the server then resolves the account token by other
+	// means, like static configuration); a bundle (creds -bundle) embeds it.
+	AccountToken string
 	// UserToken is the account-signed user token; empty in account-level
 	// creds.
 	UserToken string
@@ -45,11 +45,11 @@ type Creds struct {
 // Format renders the creds file content.
 func Format(b Creds) string {
 	var sb strings.Builder
-	if b.Token != "" {
-		fmt.Fprintf(&sb, "%s\n%s\n%s\n", accountTokenBegin, strings.TrimSpace(b.Token), accountTokenEnd)
+	if b.AccountToken != "" {
+		fmt.Fprintf(&sb, "%s\n%s\n%s\n", accountTokenBegin, strings.TrimSpace(b.AccountToken), accountTokenEnd)
 	}
 	if b.UserToken != "" {
-		if b.Token != "" {
+		if b.AccountToken != "" {
 			sb.WriteString("\n")
 		}
 		fmt.Fprintf(&sb, "%s\n%s\n%s\n", userTokenBegin, strings.TrimSpace(b.UserToken), userTokenEnd)
@@ -71,7 +71,7 @@ func Parse(contents string) (Creds, error) {
 		return Creds{}, fmt.Errorf("valiss: creds token: %w", err)
 	}
 	if ok {
-		b.Token = tok
+		b.AccountToken = tok
 	}
 	userTok, ok, err := between(contents, userTokenBegin, userTokenEnd)
 	if err != nil {
@@ -80,7 +80,7 @@ func Parse(contents string) (Creds, error) {
 	if ok {
 		b.UserToken = userTok
 	}
-	if b.Token == "" && b.UserToken == "" {
+	if b.AccountToken == "" && b.UserToken == "" {
 		return Creds{}, fmt.Errorf("valiss: creds: no token markers found")
 	}
 	seed, ok, err := between(contents, seedBegin, seedEnd)
