@@ -103,13 +103,25 @@ credential bundle to stdout and its metadata to stderr:
 
 ```console
 $ export VALISS_SEED_OD25ZJ...=SOAI2X...   # operator seed
-$ export VALISS_SEED_AC4JQU...=SAAK7G...   # account seed
-$ valiss creds acme/alice > alice.creds
+$ valiss creds acme > acme.creds
 account:
   id: acme
   key: AC4JQU...
   jti: FVIENQPFQY...        # add to the server allowlist
   expires: 2026-08-08T09:00:00Z
+```
+
+Manifest entries without a `key` get a fresh pair generated per invocation;
+the seed ships only inside the bundle.
+
+A user bundle carries only the user token and seed (NATS-resolver style):
+the operator seed is not needed at mint time, so an account holder can
+issue its users on its own. The server resolves account tokens itself,
+e.g. from static configuration:
+
+```console
+$ export VALISS_SEED_AC4JQU...=SAAK7G...   # account seed
+$ valiss creds acme/alice > alice.creds
 user:
   id: alice
   key: UDKED...
@@ -117,21 +129,16 @@ user:
   expires: 2026-07-09T13:00:00Z
 ```
 
-Manifest entries without a `key` get a fresh pair generated per invocation;
-the seed ships only inside the bundle. Minting a user credential embeds a
-freshly signed account token, so every mint yields a new account jti for the
-allowlist.
-
-With `-no-account-token` a user bundle carries only the user token and seed
-(NATS-resolver style): the operator seed is not needed at mint time, so an
-account holder can issue its users on its own. The server must then resolve
-account tokens itself, e.g. from static configuration:
-
 ```go
 resolver, _ := token.StaticAccountTokens(acctTok1, acctTok2)
 verifier := token.NewVerifier(operatorPubKey, allowlist,
     token.WithAccountTokenResolver(resolver))
 ```
+
+Pass `-with-account-token` to opt into the full chain instead: the bundle
+then embeds a freshly minted account token (requiring the operator seed),
+and any server verifies it without a resolver. Each such mint yields a new
+account jti for the allowlist.
 
 An annotated template ships as [`valiss.example.yaml`](valiss.example.yaml):
 

@@ -25,7 +25,7 @@ Per-request verification (`token.Verifier.VerifyCredential`, takes a `token.Cred
 
 1. **Account token**: operator-signed JWT embedding the account's public key (custom claims `tenant_key`, `scopes`), checked against the pinned operator key and expiry.
 2. **Allowlist**: the *account* token's jti must be in a server-side `token.Allowlist`; removal revokes before expiry. User tokens are not allowlisted — revocation is account-wide, user-level revocation relies on short TTLs.
-3. **User token** (optional chain): account-signed, verified against the account token's bound key. Effective scopes = user scopes clamped to the account's grants (`bearer` passes through unclamped: it selects an auth mode, not a grant). A request may carry only the user token (creds minted with `-no-account-token`); the server then resolves the account token via `WithAccountTokenResolver` (`StaticAccountTokens` helper), and the resolved token goes through the same checks.
+3. **User token** (optional chain): account-signed, verified against the account token's bound key. Effective scopes = user scopes clamped to the account's grants (`bearer` passes through unclamped: it selects an auth mode, not a grant). A request may carry only the user token (the default for user creds); the server then resolves the account token via `WithAccountTokenResolver` (`StaticAccountTokens` helper), and the resolved token goes through the same checks.
 4. **Custom validators**: `WithClaimsValidator` hooks run here, after chain assembly and before the signature check, in registration order; first error rejects. This is the injection point for tenant-status lookups, audit, custom semantics.
 5. **Request signature**: the client signs an RFC3339Nano timestamp with its seed, verified against the effective bound key within a skew window (`token.DefaultSkew`, 2m). Tokens granting the `bearer` scope may skip it (replayable, token-only).
 
@@ -35,7 +35,7 @@ Layering, bottom to top:
 - `pkg/grpcauth`, `pkg/httpauth` — thin transport adapters over `token.Verifier`: header/metadata extraction, error mapping (gRPC status codes / HTTP 401/403), and client-side attachment (per-RPC credentials / `http.RoundTripper`), both constructed from a `creds.Bundle`. Headers shared by both transports: `valiss-tenant-token`, `valiss-user-token`, `valiss-tenant-timestamp`, `valiss-tenant-signature` (`token.Header*` constants).
 - `pkg/creds` — client bundle file (`Bundle`: account token + optional user token + optional seed), nsc-creds-style markers. Bearer bundles have no seed.
 - `internal/manifest` — `valiss.yaml` manifest, CLI-only; one operator (trust domain) with nested accounts and users, public data only. Scopes are list-only; user entries are `key` XOR `bearer: true`; user scopes must be covered by account scopes.
-- `main.go` — stateless CLI: `keygen operator|account|user`, `creds ACCOUNT[/USER]`. Signing seeds come from `VALISS_SEED_<PUBKEY>` env vars (missing var = hard error naming it); entries without a manifest `key` get a fresh pair per invocation, seed shipped only in the bundle. Bundle → stdout, metadata (allowlist jti) → stderr.
+- `main.go` — stateless CLI: `keygen operator|account|user`, `creds ACCOUNT[/USER]`. Signing seeds come from `VALISS_SEED_<PUBKEY>` env vars (missing var = hard error naming it); entries without a manifest `key` get a fresh pair per invocation, seed shipped only in the bundle. Bundle → stdout, metadata (allowlist jti) → stderr. User bundles carry only the user token by default (needs just the account seed); `-with-account-token` embeds a fresh account token too (needs the operator seed, mints a new allowlist jti).
 
 Authorization is scope-based: `call:<gRPC full method>` or `call:<HTTP path>`, with trailing-`*` prefix wildcards (`Claims.Authorizes`, `token.Covered`). Enforcement is opt-in per transport: `grpcauth.WithMethodScope()`, `httpauth.WithPathScope()` / `WithScopeMapper()`.
 
@@ -43,6 +43,6 @@ Authorization is scope-based: `call:<gRPC full method>` or `call:<HTTP path>`, w
 
 - Error messages are prefixed `valiss:`.
 - Key levels are strict: operator keys sign account tokens, account keys sign user tokens and never the reverse; accounts always bind a key (only user entries may be keyless `bearer` ones). Do not weaken account keys to user-type keys; delegation depends on every tenant holding an account key.
-- Minting a user credential embeds a freshly signed account token, so each mint produces a new account jti for the allowlist; surface it in any tooling output.
+- Minting a user credential with `-with-account-token` embeds a freshly signed account token, so each such mint produces a new account jti for the allowlist; surface it in any tooling output.
 - Tests use `token.WithClock` to inject time; prefer that over sleeping.
 - `keygen` writes the key pair to stdout and guidance to stderr so redirected output stays parseable; keep that separation.

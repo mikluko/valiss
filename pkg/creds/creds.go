@@ -27,9 +27,9 @@ const (
 
 // Bundle is the parsed content of a creds file.
 type Bundle struct {
-	// Token is the operator-signed tenant token. It may be absent in a
-	// user-level bundle minted with -no-account-token; the server then
-	// resolves the account token by other means (static configuration).
+	// Token is the operator-signed tenant token. User-level bundles omit it
+	// by default (the server then resolves the account token by other means,
+	// like static configuration); creds -with-account-token embeds it.
 	Token string
 	// UserToken is the account-signed user token; empty in account-level
 	// bundles.

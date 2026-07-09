@@ -103,10 +103,12 @@ accounts:
 	return f
 }
 
-func runCreds(t *testing.T, f fixture, path string) (creds.Bundle, credsMeta) {
+func runCreds(t *testing.T, f fixture, path string, flags ...string) (creds.Bundle, credsMeta) {
 	t.Helper()
 	var out, msg bytes.Buffer
-	require.NoError(t, cmdCreds(&out, &msg, []string{"-f", f.cfgPath, path}))
+	args := append([]string{"-f", f.cfgPath}, flags...)
+	args = append(args, path)
+	require.NoError(t, cmdCreds(&out, &msg, args))
 	bundle, err := creds.Parse(out.String())
 	require.NoError(t, err)
 	var meta credsMeta
@@ -162,25 +164,63 @@ func TestCredsGeneratedAccount(t *testing.T) {
 
 func TestCredsUser(t *testing.T) {
 	f := newFixture(t)
-	t.Setenv("VALISS_SEED_"+f.opPub, f.opSeed)
+	// Only the account and user seeds: a plain user bundle carries no
+	// account token and needs no operator seed.
 	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
 	t.Setenv("VALISS_SEED_"+f.userPub, f.userSeed)
 
 	bundle, meta := runCreds(t, f, "acme/alice")
+	assert.Equal(t, f.userSeed, string(bundle.Seed))
+	assert.Empty(t, bundle.Token, "account token omitted by default")
+
+	user, err := token.Verify(bundle.UserToken, f.acctPub)
+	require.NoError(t, err)
+	assert.Equal(t, "alice", user.TenantID)
+	assert.Equal(t, f.userPub, user.PubKey)
+
+	assert.Nil(t, meta.Account)
+	require.NotNil(t, meta.User)
+	assert.Equal(t, user.ID, meta.User.JTI)
+
+	// A server with the account token in static configuration accepts it.
+	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, time.Hour)
+	require.NoError(t, err)
+	acct, err := token.Verify(acctTok, f.opPub)
+	require.NoError(t, err)
+	resolver, err := token.StaticAccountTokens(acctTok)
+	require.NoError(t, err)
+	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID), token.WithAccountTokenResolver(resolver))
+
+	kp, err := nkeys.FromSeed(bundle.Seed)
+	require.NoError(t, err)
+	ts, sig, err := token.SignRequest(kp, time.Now())
+	require.NoError(t, err)
+	claims, err := v.VerifyCredential(token.Credential{UserToken: bundle.UserToken, Timestamp: ts, Signature: sig})
+	require.NoError(t, err)
+	assert.Equal(t, "acme", claims.TenantID)
+	assert.Equal(t, "alice", claims.UserID)
+}
+
+func TestCredsUserWithAccountToken(t *testing.T) {
+	f := newFixture(t)
+	t.Setenv("VALISS_SEED_"+f.opPub, f.opSeed)
+	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
+	t.Setenv("VALISS_SEED_"+f.userPub, f.userSeed)
+
+	bundle, meta := runCreds(t, f, "acme/alice", "-with-account-token")
 	assert.Equal(t, f.userSeed, string(bundle.Seed))
 
 	acct, err := token.Verify(bundle.Token, f.opPub)
 	require.NoError(t, err)
 	user, err := token.Verify(bundle.UserToken, f.acctPub)
 	require.NoError(t, err)
-	assert.Equal(t, "alice", user.TenantID)
-	assert.Equal(t, f.userPub, user.PubKey)
 
+	require.NotNil(t, meta.Account)
 	require.NotNil(t, meta.User)
 	assert.Equal(t, acct.ID, meta.Account.JTI)
 	assert.Equal(t, user.ID, meta.User.JTI)
 
-	// The whole chain passes the verifier.
+	// The embedded chain passes the verifier without a resolver.
 	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID))
 	kp, err := nkeys.FromSeed(bundle.Seed)
 	require.NoError(t, err)
@@ -190,11 +230,28 @@ func TestCredsUser(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "acme", claims.TenantID)
 	assert.Equal(t, "alice", claims.UserID)
+
+	t.Run("requires the operator seed", func(t *testing.T) {
+		t.Setenv("VALISS_SEED_"+f.opPub, "")
+		err := cmdCreds(&bytes.Buffer{}, &bytes.Buffer{}, []string{"-f", f.cfgPath, "-with-account-token", "acme/alice"})
+		assert.ErrorContains(t, err, "VALISS_SEED_"+f.opPub)
+	})
+
+	t.Run("rejected for account-level creds", func(t *testing.T) {
+		err := cmdCreds(&bytes.Buffer{}, &bytes.Buffer{}, []string{"-f", f.cfgPath, "-with-account-token", "acme"})
+		assert.ErrorContains(t, err, "applies only to user credentials")
+	})
+}
+
+func mustKey(t *testing.T, seed string) nkeys.KeyPair {
+	t.Helper()
+	kp, err := nkeys.FromSeed([]byte(seed))
+	require.NoError(t, err)
+	return kp
 }
 
 func TestCredsGeneratedUser(t *testing.T) {
 	f := newFixture(t)
-	t.Setenv("VALISS_SEED_"+f.opPub, f.opSeed)
 	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
 
 	bundle, meta := runCreds(t, f, "acme/bob")
@@ -214,60 +271,12 @@ func TestCredsGeneratedUser(t *testing.T) {
 	assert.WithinDuration(t, time.Now().Add(30*time.Minute), expires, time.Minute)
 }
 
-func TestCredsUserNoAccountToken(t *testing.T) {
-	f := newFixture(t)
-	// Only the account seed: -no-account-token needs no operator seed.
-	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
-	t.Setenv("VALISS_SEED_"+f.userPub, f.userSeed)
-
-	var out, msg bytes.Buffer
-	require.NoError(t, cmdCreds(&out, &msg, []string{"-f", f.cfgPath, "-no-account-token", "acme/alice"}))
-	bundle, err := creds.Parse(out.String())
-	require.NoError(t, err)
-	assert.Empty(t, bundle.Token, "account token omitted")
-	require.NotEmpty(t, bundle.UserToken)
-
-	var meta credsMeta
-	require.NoError(t, yaml.Unmarshal(msg.Bytes(), &meta))
-	assert.Nil(t, meta.Account)
-	require.NotNil(t, meta.User)
-
-	// A server with the account token in static configuration accepts it.
-	acctTok, err := token.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, []string{"call:/pkg.Svc/*"}, time.Hour)
-	require.NoError(t, err)
-	acct, err := token.Verify(acctTok, f.opPub)
-	require.NoError(t, err)
-	resolver, err := token.StaticAccountTokens(acctTok)
-	require.NoError(t, err)
-	v := token.NewVerifier(f.opPub, token.NewStaticAllowlist(acct.ID), token.WithAccountTokenResolver(resolver))
-
-	kp, err := nkeys.FromSeed(bundle.Seed)
-	require.NoError(t, err)
-	ts, sig, err := token.SignRequest(kp, time.Now())
-	require.NoError(t, err)
-	claims, err := v.VerifyCredential(token.Credential{UserToken: bundle.UserToken, Timestamp: ts, Signature: sig})
-	require.NoError(t, err)
-	assert.Equal(t, "alice", claims.UserID)
-
-	t.Run("rejected for account-level creds", func(t *testing.T) {
-		err := cmdCreds(&bytes.Buffer{}, &bytes.Buffer{}, []string{"-f", f.cfgPath, "-no-account-token", "acme"})
-		assert.ErrorContains(t, err, "applies only to user credentials")
-	})
-}
-
-func mustKey(t *testing.T, seed string) nkeys.KeyPair {
-	t.Helper()
-	kp, err := nkeys.FromSeed([]byte(seed))
-	require.NoError(t, err)
-	return kp
-}
-
 func TestCredsBearerUser(t *testing.T) {
 	f := newFixture(t)
 	t.Setenv("VALISS_SEED_"+f.opPub, f.opSeed)
 	t.Setenv("VALISS_SEED_"+f.acctPub, f.acctSeed)
 
-	bundle, meta := runCreds(t, f, "acme/carol")
+	bundle, meta := runCreds(t, f, "acme/carol", "-with-account-token")
 	assert.Empty(t, bundle.Seed, "bearer bundle carries no seed")
 	assert.Empty(t, meta.User.Key)
 
