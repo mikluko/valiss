@@ -77,12 +77,19 @@ authorization is built on this mechanism:
   reject methods outside the extension with PermissionDenied.
 
 Transport enforcement is fail-closed: every token in the chain must carry
-the transport extension, an empty grant list grants nothing, and allow-all
-is the explicit wildcard (`Methods: ["*"]`, `Paths: ["*"]`). Deployments
-that authorize entirely outside the transport can opt out with
+the transport extension, the zero-value extension grants nothing, and
+allow-all is the explicit wildcard (`Methods: ["*"]`, `Paths: ["*"]`).
+Deployments that authorize entirely outside the transport can opt out with
 `AllowMissingExtension()` on the authenticator/middleware. Extensions
 present on both chain levels are both enforced, so an account-level
 extension bounds every user of the account.
+
+`httpauth.Ext` has three independent dimensions (hosts, methods, paths) and
+each constrains only when populated: a dimension you leave empty imposes no
+restriction on it. So `Ext{Paths: ["/admin/*"]}` permits `/admin/*` with
+**any** method — to scope a read-only admin surface, name every dimension:
+`Ext{Methods: ["GET"], Paths: ["/admin/*"]}`. (The single-dimension
+`grpcauth.Ext` has no other dimensions to leave open.)
 
 Domain claims work the same way. Define the type, mint it into the token,
 recover it in the handler:

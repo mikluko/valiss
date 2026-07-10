@@ -11,21 +11,41 @@ import (
 // Ext is the HTTP transport extension claim: it binds a token to specific
 // hosts, methods, and paths. Mint it with valiss.WithExtension(Ext{...}).
 //
-// Enforcement is fail-closed: every token in the chain must carry the
-// extension (unless the middleware was built with AllowMissingExtension),
-// and the zero-value extension grants nothing. A non-zero extension leaves
-// its empty dimensions unconstrained, so Ext{Paths: []string{"/v1/*"}}
-// permits any host and method under /v1/; allow-all is the explicit
-// Ext{Paths: []string{"*"}}. Extensions on both chain levels are enforced
-// (AND), so an account-level extension bounds all of the account's users on
-// top of their own.
+// Enforcement is fail-closed at the extension level: every token in the
+// chain must carry the extension (unless the middleware was built with
+// AllowMissingExtension), and the zero-value extension grants nothing.
+//
+// The three dimensions are independent AND-filters, and each is
+// constraining only when populated: a dimension you leave empty imposes no
+// restriction on that dimension. This is the natural allow-list reading (the
+// constraints you name apply; the ones you omit stay open), but it is a
+// footgun if you expect naming one dimension to lock down the others. For
+// example:
+//
+//	Ext{Paths: []string{"/admin/*"}}
+//
+// permits /admin/* with ANY method and from ANY host — not just reads. To
+// scope a read-only admin surface you must name every dimension you care
+// about:
+//
+//	Ext{Methods: []string{"GET"}, Paths: []string{"/admin/*"}}
+//
+// Allow-all within a dimension is the explicit wildcard, e.g.
+// Paths: []string{"*"} or Methods: []string{"*"}. Note this differs from the
+// single-dimension grpcauth.Ext, where there are no other dimensions to
+// leave open.
+//
+// Extensions on both chain levels are enforced (AND), so an account-level
+// extension bounds all of the account's users on top of their own.
 type Ext struct {
-	// Hosts allowed, matched exactly against the request Host.
+	// Hosts allowed, matched exactly against the request Host. Empty imposes
+	// no host constraint.
 	Hosts []string `json:"hosts,omitempty"`
-	// Methods allowed, matched exactly (upper-case, e.g. "GET").
+	// Methods allowed, matched exactly (upper-case, e.g. "GET"). Empty
+	// imposes no method constraint: every verb is permitted.
 	Methods []string `json:"methods,omitempty"`
 	// Paths allowed; a trailing "*" is a prefix wildcard, so "/v1/*" covers
-	// every path under /v1/.
+	// every path under /v1/. Empty imposes no path constraint.
 	Paths []string `json:"paths,omitempty"`
 }
 
