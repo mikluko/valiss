@@ -49,4 +49,5 @@ Layout:
 - Terminology: *creds* = the credentials file (subject token + seed); *bundle* = user creds that also carry the upstream account token.
 - Tests use `valiss.WithClock` to inject time; prefer that over sleeping.
 - Influences (NATS/nsc, RFC 7519, golang-jwt, Biscuit/Macaroons, SPIFFE) are acknowledged in the README's Prior art section only; do not describe valiss as "NATS-like" or "modeled on NATS" in docs or comments.
+- `CHANGELOG.md` (Keep a Changelog format) is the source of truth for release notes; add user-facing changes to its `[Unreleased]` section as you make them, flagging breaking changes with **Breaking** and a migration line. At release, rename the section to the version + date, add compare links, and paste that section as the GitHub Release body.
 - The example CLI's `keygen` writes the key pair to stdout and guidance to stderr so redirected output stays parseable; keep that separation.
