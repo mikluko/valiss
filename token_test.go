@@ -237,26 +237,40 @@ func TestDecode(t *testing.T) {
 func TestSignVerifyRequest(t *testing.T) {
 	tenant, tenantPub := tenantKeys(t)
 	now := time.Now()
+	ctx := []byte("GET\napi.example.com\n/v1/widgets")
 
-	ts, sig, err := SignRequest(tenant, now)
+	ts, sig, err := SignRequest(tenant, now, ctx)
 	require.NoError(t, err)
-	assert.NoError(t, VerifySignature(tenantPub, ts, sig, now, DefaultSkew))
+	assert.NoError(t, VerifySignature(tenantPub, ts, sig, ctx, now, DefaultSkew))
 
 	t.Run("outside skew window", func(t *testing.T) {
-		err := VerifySignature(tenantPub, ts, sig, now.Add(5*time.Minute), DefaultSkew)
+		err := VerifySignature(tenantPub, ts, sig, ctx, now.Add(5*time.Minute), DefaultSkew)
 		assert.ErrorContains(t, err, "skew window")
 	})
 
 	t.Run("wrong key", func(t *testing.T) {
 		_, otherPub := tenantKeys(t)
-		err := VerifySignature(otherPub, ts, sig, now, DefaultSkew)
+		err := VerifySignature(otherPub, ts, sig, ctx, now, DefaultSkew)
 		assert.ErrorContains(t, err, "signature verification failed")
 	})
 
 	t.Run("tampered timestamp breaks signature", func(t *testing.T) {
 		other := now.Add(30 * time.Second)
-		err := VerifySignature(tenantPub, other.UTC().Format(time.RFC3339Nano), sig, other, DefaultSkew)
+		err := VerifySignature(tenantPub, other.UTC().Format(time.RFC3339Nano), sig, ctx, other, DefaultSkew)
 		assert.ErrorContains(t, err, "signature verification failed")
+	})
+
+	t.Run("different request context breaks signature", func(t *testing.T) {
+		other := []byte("POST\napi.example.com\n/v1/widgets")
+		err := VerifySignature(tenantPub, ts, sig, other, now, DefaultSkew)
+		assert.ErrorContains(t, err, "signature verification failed",
+			"a signature must not authorize a different request")
+	})
+
+	t.Run("nil context binds only the timestamp", func(t *testing.T) {
+		ts, sig, err := SignRequest(tenant, now, nil)
+		require.NoError(t, err)
+		assert.NoError(t, VerifySignature(tenantPub, ts, sig, nil, now, DefaultSkew))
 	})
 }
 

@@ -1,7 +1,9 @@
 package valiss
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -11,26 +13,35 @@ import (
 // DefaultSkew bounds request-timestamp drift and token-expiry slack.
 const DefaultSkew = 2 * time.Minute
 
-// signedPayload is the canonical byte string a tenant signs per request. It
-// is just the timestamp: the token binds the tenant key, the allowlist bounds
-// validity, and the skew window bounds replay. Rendered as RFC3339Nano.
-func signedPayload(ts time.Time) []byte {
-	return []byte(ts.UTC().Format(time.RFC3339Nano))
+// signedPayload is the canonical byte string a subject signs per request: the
+// timestamp bound to a hash of the request context. Binding the context (the
+// transport's canonical method/path) stops a captured signature from
+// authorizing a different operation; the timestamp and skew window bound
+// replay of the same operation. Rendered deterministically so both sides
+// derive identical bytes.
+func signedPayload(ts time.Time, reqContext []byte) []byte {
+	sum := sha256.Sum256(reqContext)
+	return []byte(ts.UTC().Format(time.RFC3339Nano) + "\n" + hex.EncodeToString(sum[:]))
 }
 
-// SignRequest produces the timestamp and base64 signature a tenant attaches
-// to a request, signing with its nkey seed.
-func SignRequest(tenant nkeys.KeyPair, now time.Time) (timestamp, signature string, err error) {
-	sig, err := tenant.Sign(signedPayload(now))
+// SignRequest produces the timestamp and base64 signature a subject attaches
+// to a request, signing the timestamp bound to reqContext with its nkey seed.
+// reqContext is the transport's canonical description of the request (e.g.
+// method and path); the server must reconstruct identical bytes. Pass nil to
+// bind nothing beyond the timestamp.
+func SignRequest(subject nkeys.KeyPair, now time.Time, reqContext []byte) (timestamp, signature string, err error) {
+	sig, err := subject.Sign(signedPayload(now, reqContext))
 	if err != nil {
 		return "", "", fmt.Errorf("valiss: sign request: %w", err)
 	}
 	return now.UTC().Format(time.RFC3339Nano), base64.StdEncoding.EncodeToString(sig), nil
 }
 
-// VerifySignature checks a request signature against the tenant public key and
-// bounds the timestamp to a symmetric skew window around now.
-func VerifySignature(tenantPubKey, timestamp, signature string, now time.Time, skew time.Duration) error {
+// VerifySignature checks a request signature against the subject public key,
+// bounds the timestamp to a symmetric skew window around now, and confirms it
+// was signed over reqContext. reqContext must match the bytes the client
+// signed (see SignRequest).
+func VerifySignature(subjectPubKey, timestamp, signature string, reqContext []byte, now time.Time, skew time.Duration) error {
 	ts, err := time.Parse(time.RFC3339Nano, timestamp)
 	if err != nil {
 		return fmt.Errorf("valiss: bad request timestamp: %w", err)
@@ -42,11 +53,11 @@ func VerifySignature(tenantPubKey, timestamp, signature string, now time.Time, s
 	if err != nil {
 		return fmt.Errorf("valiss: bad request signature encoding: %w", err)
 	}
-	pub, err := nkeys.FromPublicKey(tenantPubKey)
+	pub, err := nkeys.FromPublicKey(subjectPubKey)
 	if err != nil {
-		return fmt.Errorf("valiss: bad tenant public key: %w", err)
+		return fmt.Errorf("valiss: bad subject public key: %w", err)
 	}
-	if err := pub.Verify(signedPayload(ts), sig); err != nil {
+	if err := pub.Verify(signedPayload(ts, reqContext), sig); err != nil {
 		return fmt.Errorf("valiss: request signature verification failed: %w", err)
 	}
 	return nil

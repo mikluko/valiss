@@ -190,7 +190,7 @@ func TestCredsUser(t *testing.T) {
 
 	kp, err := nkeys.FromSeed(parsed.Seed)
 	require.NoError(t, err)
-	ts, sig, err := valiss.SignRequest(kp, time.Now())
+	ts, sig, err := valiss.SignRequest(kp, time.Now(), nil)
 	require.NoError(t, err)
 	id, err := v.VerifyRequest(valiss.Request{UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestCredsUserBundle(t *testing.T) {
 	v := valiss.NewVerifier(f.opPub, valiss.NewStaticAllowlist(acct.ID))
 	kp, err := nkeys.FromSeed(parsed.Seed)
 	require.NoError(t, err)
-	ts, sig, err := valiss.SignRequest(kp, time.Now())
+	ts, sig, err := valiss.SignRequest(kp, time.Now(), nil)
 	require.NoError(t, err)
 	id, err := v.VerifyRequest(valiss.Request{AccountToken: parsed.AccountToken, UserToken: parsed.UserToken, Timestamp: ts, Signature: sig})
 	require.NoError(t, err)

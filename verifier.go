@@ -26,6 +26,11 @@ type Request struct {
 	// on bearer requests.
 	Timestamp string
 	Signature string
+	// Context is the transport's canonical description of the request (e.g.
+	// method and path) that the signature is bound to. The transport fills
+	// it from the incoming request and the client signs the identical bytes;
+	// a mismatch fails the signature. Nil binds nothing beyond the timestamp.
+	Context []byte
 }
 
 // Identity is the verified result of a request.
@@ -262,7 +267,7 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		if id.User == nil || !id.User.Bearer {
 			return nil, errors.New("valiss: request signature required: not a bearer token")
 		}
-	} else if err := VerifySignature(subject, req.Timestamp, req.Signature, now, v.skew); err != nil {
+	} else if err := VerifySignature(subject, req.Timestamp, req.Signature, req.Context, now, v.skew); err != nil {
 		return nil, err
 	}
 	for _, check := range v.extChecks {

@@ -43,7 +43,7 @@ func TestVerifyRequestBearer(t *testing.T) {
 	})
 
 	t.Run("signature still verified when present on a bearer token", func(t *testing.T) {
-		ts, sig, err := SignRequest(user, time.Now())
+		ts, sig, err := SignRequest(user, time.Now(), nil)
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearerTok, Timestamp: ts, Signature: sig})
 		assert.NoError(t, err)
@@ -53,7 +53,7 @@ func TestVerifyRequestBearer(t *testing.T) {
 	})
 
 	t.Run("partial credential is not bearer", func(t *testing.T) {
-		ts, _, err := SignRequest(user, time.Now())
+		ts, _, err := SignRequest(user, time.Now(), nil)
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: bearerTok, Timestamp: ts})
 		assert.Error(t, err, "timestamp without signature must fail")
@@ -67,13 +67,13 @@ func TestClaimsValidator(t *testing.T) {
 
 	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
 	require.NoError(t, err)
-	acctTS, acctSig, err := SignRequest(account, time.Now())
+	acctTS, acctSig, err := SignRequest(account, time.Now(), nil)
 	require.NoError(t, err)
 
 	t.Run("validator sees the assembled identity", func(t *testing.T) {
 		userTok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
 		require.NoError(t, err)
-		ts, sig, err := SignRequest(user, time.Now())
+		ts, sig, err := SignRequest(user, time.Now(), nil)
 		require.NoError(t, err)
 
 		var seen *Identity
@@ -141,7 +141,7 @@ func TestClaimsValidator(t *testing.T) {
 		require.NoError(t, err)
 		extUserTok, err := IssueUser(account, "alice", userPub, WithExtension(domainClaims{Plan: "basic"}))
 		require.NoError(t, err)
-		ts, sig, err := SignRequest(user, time.Now())
+		ts, sig, err := SignRequest(user, time.Now(), nil)
 		require.NoError(t, err)
 
 		var gotAcct, gotUser domainClaims
@@ -171,7 +171,7 @@ func TestExtensionTypeRegistration(t *testing.T) {
 	t.Run("well-formed extension passes", func(t *testing.T) {
 		tok, err := Issue(op, "acme", accountPub, WithExtension(domainClaims{Plan: "pro"}))
 		require.NoError(t, err)
-		ts, sig, err := SignRequest(account, time.Now())
+		ts, sig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithExtensionType[domainClaims]())
 		_, err = v.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
@@ -183,7 +183,7 @@ func TestExtensionTypeRegistration(t *testing.T) {
 		// the registered struct type must fail.
 		tok, err := Issue(op, "acme", accountPub, WithExtension(stringExt("not-a-struct")))
 		require.NoError(t, err)
-		ts, sig, err := SignRequest(account, time.Now())
+		ts, sig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithExtensionType[domainClaims]())
 		_, err = v.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
@@ -193,7 +193,7 @@ func TestExtensionTypeRegistration(t *testing.T) {
 	t.Run("absent extension is not required", func(t *testing.T) {
 		tok, err := Issue(op, "acme", accountPub)
 		require.NoError(t, err)
-		ts, sig, err := SignRequest(account, time.Now())
+		ts, sig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithExtensionType[domainClaims]())
 		_, err = v.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
@@ -213,7 +213,7 @@ func TestValidityWindow(t *testing.T) {
 		assert.True(t, claims.ExpiresAt.IsZero())
 
 		future := time.Now().Add(100 * 365 * 24 * time.Hour)
-		ts, sig, err := SignRequest(tenant, future)
+		ts, sig, err := SignRequest(tenant, future, nil)
 		require.NoError(t, err)
 		farFuture := NewVerifier(opPub, AllowAll{}, WithClock(func() time.Time { return future }))
 		_, err = farFuture.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
@@ -226,14 +226,14 @@ func TestValidityWindow(t *testing.T) {
 		require.NoError(t, err)
 
 		now := time.Now()
-		ts, sig, err := SignRequest(tenant, now)
+		ts, sig, err := SignRequest(tenant, now, nil)
 		require.NoError(t, err)
 		early := NewVerifier(opPub, AllowAll{}, WithSkew(0), WithClock(func() time.Time { return now }))
 		_, err = early.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
 		assert.ErrorContains(t, err, "not yet valid")
 
 		later := start.Add(time.Minute)
-		ts, sig, err = SignRequest(tenant, later)
+		ts, sig, err = SignRequest(tenant, later, nil)
 		require.NoError(t, err)
 		inWindow := NewVerifier(opPub, AllowAll{}, WithSkew(0), WithClock(func() time.Time { return later }))
 		_, err = inWindow.VerifyRequest(Request{AccountToken: tok, Timestamp: ts, Signature: sig})
@@ -264,9 +264,9 @@ func TestOperatorToken(t *testing.T) {
 	require.NoError(t, err)
 	userTok, err := IssueUser(account, "alice", userPub, WithEpoch(2), WithTTL(time.Hour))
 	require.NoError(t, err)
-	ts, sig, err := SignRequest(user, time.Now())
+	ts, sig, err := SignRequest(user, time.Now(), nil)
 	require.NoError(t, err)
-	acctTS, acctSig, err := SignRequest(account, time.Now())
+	acctTS, acctSig, err := SignRequest(account, time.Now(), nil)
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{}, WithOperatorToken(opTok))
@@ -334,7 +334,7 @@ func TestOperatorToken(t *testing.T) {
 		longAcct, err := Issue(op, "acme", accountPub, WithEpoch(2), WithTTL(3*time.Hour))
 		require.NoError(t, err)
 		activeAt := time.Now().Add(2 * time.Hour)
-		lateTS, lateSig, err := SignRequest(account, activeAt)
+		lateTS, lateSig, err := SignRequest(account, activeAt, nil)
 		require.NoError(t, err)
 		active := NewVerifier(opPub, AllowAll{}, WithOperatorToken(futureOp), WithSkew(0),
 			WithClock(func() time.Time { return activeAt }))
@@ -402,7 +402,7 @@ func TestAccountTokenResolver(t *testing.T) {
 	require.NoError(t, err)
 	userTok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
 	require.NoError(t, err)
-	ts, sig, err := SignRequest(user, time.Now())
+	ts, sig, err := SignRequest(user, time.Now(), nil)
 	require.NoError(t, err)
 
 	resolver, err := StaticAccountTokens(acctTok)
@@ -462,7 +462,7 @@ func TestVerifyRequestChain(t *testing.T) {
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{})
-	ts, sig, err := SignRequest(user, time.Now())
+	ts, sig, err := SignRequest(user, time.Now(), nil)
 	require.NoError(t, err)
 
 	t.Run("valid chain authenticates the user", func(t *testing.T) {
@@ -476,7 +476,7 @@ func TestVerifyRequestChain(t *testing.T) {
 	})
 
 	t.Run("account signature does not pass for a chain request", func(t *testing.T) {
-		acctTS, acctSig, err := SignRequest(account, time.Now())
+		acctTS, acctSig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: userTok, Timestamp: acctTS, Signature: acctSig})
 		assert.ErrorContains(t, err, "signature verification failed")

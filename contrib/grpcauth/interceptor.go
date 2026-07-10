@@ -55,6 +55,7 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 		UserToken:    first(md, valiss.HeaderUserToken),
 		Timestamp:    first(md, valiss.HeaderTimestamp),
 		Signature:    first(md, valiss.HeaderSignature),
+		Context:      methodContext(fullMethod),
 	}
 	if req.AccountToken == "" && req.UserToken == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")

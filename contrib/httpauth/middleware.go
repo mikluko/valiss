@@ -49,6 +49,7 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		UserToken:    r.Header.Get(valiss.HeaderUserToken),
 		Timestamp:    r.Header.Get(valiss.HeaderTimestamp),
 		Signature:    r.Header.Get(valiss.HeaderSignature),
+		Context:      requestContext(r),
 	}
 	if req.AccountToken == "" && req.UserToken == "" {
 		http.Error(w, "missing credentials", http.StatusUnauthorized)

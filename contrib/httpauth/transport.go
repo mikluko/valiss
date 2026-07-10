@@ -49,7 +49,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.Header.Set(valiss.HeaderUserToken, t.userToken)
 	}
 	if t.subject != nil {
-		timestamp, signature, err := valiss.SignRequest(t.subject, t.now())
+		timestamp, signature, err := valiss.SignRequest(t.subject, t.now(), requestContext(req))
 		if err != nil {
 			return nil, err
 		}
@@ -64,3 +64,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 var _ http.RoundTripper = (*Transport)(nil)
+
+// requestContext is the canonical request-context bytes the signature is
+// bound to: method, host, and path. The client (RoundTrip, absolute URL) and
+// the server (ServeHTTP, Host header + path) must derive identical bytes, so
+// the host is taken from r.Host with a fallback to the URL, and the query is
+// excluded. Method and path are matched exactly.
+func requestContext(r *http.Request) []byte {
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
+	}
+	return []byte("http\n" + r.Method + "\n" + host + "\n" + r.URL.Path)
+}

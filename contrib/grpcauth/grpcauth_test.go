@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -59,6 +60,24 @@ func authContext(req valiss.Request) context.Context {
 	return metadata.NewIncomingContext(context.Background(), md)
 }
 
+// signed returns an incoming-metadata context for a request signed by kp and
+// bound to the given full method, as the interceptor invoked with that method
+// will reconstruct and verify.
+func signed(t *testing.T, kp nkeys.KeyPair, at time.Time, method string, req valiss.Request) context.Context {
+	t.Helper()
+	ts, sig, err := valiss.SignRequest(kp, at, methodContext(method))
+	require.NoError(t, err)
+	req.Timestamp, req.Signature = ts, sig
+	return authContext(req)
+}
+
+// callerContext injects the gRPC RequestInfo (method) that per-RPC
+// credentials read to bind the signature, mirroring what the framework does
+// at real call time.
+func callerContext(method string) context.Context {
+	return credentials.NewContextWithRequestInfo(context.Background(), credentials.RequestInfo{Method: method})
+}
+
 func unaryInfo(method string) *grpc.UnaryServerInfo {
 	return &grpc.UnaryServerInfo{FullMethod: method}
 }
@@ -74,28 +93,27 @@ func TestExtEnforcement(t *testing.T) {
 	now := time.Now()
 	clock := valiss.WithClock(func() time.Time { return now })
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}, clock))
-	ts, sig, err := valiss.SignRequest(tenant, now)
-	require.NoError(t, err)
-
 	handler := func(context.Context, any) (any, error) { return nil, nil }
 
+	invoke := func(a *Authenticator, accountToken, method string) error {
+		ctx := signed(t, tenant, now, method, valiss.Request{AccountToken: accountToken})
+		_, err := a.UnaryInterceptor()(ctx, nil, unaryInfo(method), handler)
+		return err
+	}
+
 	t.Run("method inside the extension allowed", func(t *testing.T) {
-		_, err := auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: tok, Timestamp: ts, Signature: sig}), nil,
-			unaryInfo("/example.v1.WidgetService/CreateWidget"), handler)
-		assert.NoError(t, err)
+		assert.NoError(t, invoke(auth, tok, "/example.v1.WidgetService/CreateWidget"))
 	})
 
 	t.Run("method outside the extension denied", func(t *testing.T) {
-		_, err := auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: tok, Timestamp: ts, Signature: sig}), nil,
-			unaryInfo("/example.v1.GadgetService/CreateGadget"), handler)
+		err := invoke(auth, tok, "/example.v1.GadgetService/CreateGadget")
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	})
 
 	t.Run("token without extension denied by default", func(t *testing.T) {
 		open, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
-		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: open, Timestamp: ts, Signature: sig}), nil,
-			unaryInfo("/anything/Method"), handler)
+		err = invoke(auth, open, "/anything/Method")
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 		assert.Contains(t, status.Convert(err).Message(), "no grpc extension")
 	})
@@ -104,17 +122,14 @@ func TestExtEnforcement(t *testing.T) {
 		open, err := valiss.Issue(op, "acme", tenantPub, valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		lax := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}, clock), AllowMissingExtension())
-		_, err = lax.UnaryInterceptor()(authContext(valiss.Request{AccountToken: open, Timestamp: ts, Signature: sig}), nil,
-			unaryInfo("/anything/Method"), handler)
-		assert.NoError(t, err)
+		assert.NoError(t, invoke(lax, open, "/anything/Method"))
 	})
 
 	t.Run("empty Methods grants nothing", func(t *testing.T) {
 		none, err := valiss.Issue(op, "acme", tenantPub,
 			valiss.WithExtension(Ext{}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
-		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: none, Timestamp: ts, Signature: sig}), nil,
-			unaryInfo("/anything/Method"), handler)
+		err = invoke(auth, none, "/anything/Method")
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
 	})
 
@@ -122,9 +137,7 @@ func TestExtEnforcement(t *testing.T) {
 		all, err := valiss.Issue(op, "acme", tenantPub,
 			valiss.WithExtension(Ext{Methods: []string{"*"}}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
-		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: all, Timestamp: ts, Signature: sig}), nil,
-			unaryInfo("/anything/Method"), handler)
-		assert.NoError(t, err)
+		assert.NoError(t, invoke(auth, all, "/anything/Method"))
 	})
 }
 
@@ -141,12 +154,10 @@ func TestAuthenticate(t *testing.T) {
 	// Authentication is the focus here; extension enforcement is off.
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist(claims.ID), clock), AllowMissingExtension())
 
-	ts, sig, err := valiss.SignRequest(tenant, now)
-	require.NoError(t, err)
-
 	t.Run("authenticated request injects the identity", func(t *testing.T) {
 		var got *valiss.Identity
-		_, err := auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
+		ctx := signed(t, tenant, now, "/svc/M", valiss.Request{AccountToken: tok})
+		_, err := auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 			func(ctx context.Context, _ any) (any, error) {
 				id, ok := valiss.IdentityFromContext(ctx)
 				assert.True(t, ok)
@@ -172,17 +183,23 @@ func TestAuthenticate(t *testing.T) {
 
 	t.Run("token not in allowlist", func(t *testing.T) {
 		strict := NewAuthenticator(valiss.NewVerifier(opPub, valiss.NewStaticAllowlist("other"), clock), AllowMissingExtension())
-		_, err := strict.UnaryInterceptor()(authContext(valiss.Request{AccountToken: tok, Timestamp: ts, Signature: sig}), nil, unaryInfo("/svc/M"),
+		ctx := signed(t, tenant, now, "/svc/M", valiss.Request{AccountToken: tok})
+		_, err := strict.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
 			func(context.Context, any) (any, error) { return nil, nil })
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 		assert.Contains(t, status.Convert(err).Message(), "not recognized")
 	})
 
 	t.Run("stale request signature", func(t *testing.T) {
-		staleTS, staleSig, err := valiss.SignRequest(tenant, now.Add(-time.Hour))
-		require.NoError(t, err)
-		err = call(authContext(valiss.Request{AccountToken: tok, Timestamp: staleTS, Signature: staleSig}))
+		ctx := signed(t, tenant, now.Add(-time.Hour), "/svc/M", valiss.Request{AccountToken: tok})
+		assert.Equal(t, codes.Unauthenticated, status.Code(call(ctx)))
+	})
+
+	t.Run("signature bound to a different method rejected", func(t *testing.T) {
+		ctx := signed(t, tenant, now, "/svc/Other", valiss.Request{AccountToken: tok})
+		err := call(ctx) // invoked as /svc/M
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
+		assert.Contains(t, status.Convert(err).Message(), "signature verification failed")
 	})
 }
 
@@ -194,7 +211,7 @@ func TestCredentials(t *testing.T) {
 
 	c, err := NewCredentials(creds.Creds{AccountToken: tok, Seed: seed})
 	require.NoError(t, err)
-	md, err := c.GetRequestMetadata(context.Background())
+	md, err := c.GetRequestMetadata(callerContext("/svc/M"))
 	require.NoError(t, err)
 
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}), AllowMissingExtension())
@@ -225,7 +242,7 @@ func TestBearerCredentials(t *testing.T) {
 		require.NoError(t, err)
 		c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: bearerTok})
 		require.NoError(t, err)
-		md, err := c.GetRequestMetadata(context.Background())
+		md, err := c.GetRequestMetadata(callerContext("/svc/M"))
 		require.NoError(t, err)
 		assert.NotContains(t, md, valiss.HeaderSignature)
 		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{AccountToken: md[valiss.HeaderAccountToken], UserToken: md[valiss.HeaderUserToken]}), nil, unaryInfo("/svc/M"), handler)
@@ -251,11 +268,11 @@ func TestCredsEndToEnd(t *testing.T) {
 
 	c, err := NewCredentials(parsed)
 	require.NoError(t, err)
-	md, err := c.GetRequestMetadata(t.Context())
+	md, err := c.GetRequestMetadata(callerContext("/svc/M"))
 	require.NoError(t, err)
 	claims, err := valiss.VerifyAccount(md[valiss.HeaderAccountToken], opPub)
 	require.NoError(t, err)
-	assert.NoError(t, valiss.VerifySignature(claims.Subject, md[valiss.HeaderTimestamp], md[valiss.HeaderSignature], time.Now(), valiss.DefaultSkew))
+	assert.NoError(t, valiss.VerifySignature(claims.Subject, md[valiss.HeaderTimestamp], md[valiss.HeaderSignature], methodContext("/svc/M"), time.Now(), valiss.DefaultSkew))
 }
 
 // TestUserChain proves user-level creds authenticate through the
@@ -274,18 +291,22 @@ func TestUserChain(t *testing.T) {
 
 	c, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed})
 	require.NoError(t, err)
-	md, err := c.GetRequestMetadata(context.Background())
-	require.NoError(t, err)
 
 	// Strict default: both chain levels carry the extension.
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}))
-	ctx := authContext(valiss.Request{
-		AccountToken: md[valiss.HeaderAccountToken],
-		UserToken:    md[valiss.HeaderUserToken],
-		Timestamp:    md[valiss.HeaderTimestamp],
-		Signature:    md[valiss.HeaderSignature],
-	})
-	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/M"),
+
+	ctxFor := func(method string) context.Context {
+		md, err := c.GetRequestMetadata(callerContext(method))
+		require.NoError(t, err)
+		return authContext(valiss.Request{
+			AccountToken: md[valiss.HeaderAccountToken],
+			UserToken:    md[valiss.HeaderUserToken],
+			Timestamp:    md[valiss.HeaderTimestamp],
+			Signature:    md[valiss.HeaderSignature],
+		})
+	}
+
+	_, err = auth.UnaryInterceptor()(ctxFor("/svc/M"), nil, unaryInfo("/svc/M"),
 		func(ctx context.Context, _ any) (any, error) {
 			id, ok := valiss.IdentityFromContext(ctx)
 			require.True(t, ok)
@@ -298,7 +319,7 @@ func TestUserChain(t *testing.T) {
 
 	// The user's extension does not extend to methods only the account's
 	// extension covers.
-	_, err = auth.UnaryInterceptor()(ctx, nil, unaryInfo("/svc/Other"),
+	_, err = auth.UnaryInterceptor()(ctxFor("/svc/Other"), nil, unaryInfo("/svc/Other"),
 		func(context.Context, any) (any, error) { return nil, nil })
 	assert.Equal(t, codes.PermissionDenied, status.Code(err))
 
@@ -310,7 +331,7 @@ func TestUserChain(t *testing.T) {
 		require.NoError(t, err)
 		wc, err := NewCredentials(creds.Creds{AccountToken: acctTok, UserToken: wide, Seed: userSeed})
 		require.NoError(t, err)
-		wmd, err := wc.GetRequestMetadata(context.Background())
+		wmd, err := wc.GetRequestMetadata(callerContext("/other/Method"))
 		require.NoError(t, err)
 		_, err = auth.UnaryInterceptor()(authContext(valiss.Request{
 			AccountToken: wmd[valiss.HeaderAccountToken],

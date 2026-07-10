@@ -49,7 +49,7 @@ func (c *Credentials) AllowInsecure() *Credentials {
 	return c
 }
 
-func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
+func (c *Credentials) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
 	md := map[string]string{}
 	if c.accountToken != "" {
 		md[valiss.HeaderAccountToken] = c.accountToken
@@ -58,7 +58,11 @@ func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string
 		md[valiss.HeaderUserToken] = c.userToken
 	}
 	if c.subject != nil {
-		timestamp, signature, err := valiss.SignRequest(c.subject, c.now())
+		// Bind the signature to the full method so it cannot authorize a
+		// different RPC. The interceptor reconstructs the same bytes from
+		// info.FullMethod.
+		ri, _ := credentials.RequestInfoFromContext(ctx)
+		timestamp, signature, err := valiss.SignRequest(c.subject, c.now(), methodContext(ri.Method))
 		if err != nil {
 			return nil, err
 		}
@@ -66,6 +70,12 @@ func (c *Credentials) GetRequestMetadata(context.Context, ...string) (map[string
 		md[valiss.HeaderSignature] = signature
 	}
 	return md, nil
+}
+
+// methodContext is the canonical request-context bytes for a gRPC full
+// method (e.g. "/example.v1.WidgetService/CreateWidget").
+func methodContext(fullMethod string) []byte {
+	return []byte("grpc\n" + fullMethod)
 }
 
 func (c *Credentials) RequireTransportSecurity() bool { return c.requireTLS }

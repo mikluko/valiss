@@ -247,7 +247,9 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 
 	t.Run("stale request signature", func(t *testing.T) {
-		ts, sig, err := valiss.SignRequest(tenant, time.Now().Add(-time.Hour))
+		// The stale timestamp fails the skew window before the bound context
+		// matters, so nil context is fine here.
+		ts, sig, err := valiss.SignRequest(tenant, time.Now().Add(-time.Hour), nil)
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 		require.NoError(t, err)
@@ -270,6 +272,43 @@ func TestMiddlewareRejections(t *testing.T) {
 		resp.Body.Close()
 		assert.Empty(t, req.Header.Get(valiss.HeaderAccountToken))
 	})
+
+	t.Run("captured headers do not replay against a different path", func(t *testing.T) {
+		// Sign a real GET /a request, then replay its exact valiss-* headers
+		// against POST /b. The signature is bound to the original method and
+		// path, so the replay fails.
+		signReq, err := http.NewRequest(http.MethodGet, srv.URL+"/a", nil)
+		require.NoError(t, err)
+		var captured http.Header
+		transport, err := NewTransport(creds.Creds{AccountToken: tok, Seed: seed}, captureInto(&captured))
+		require.NoError(t, err)
+		_, _ = transport.RoundTrip(signReq)
+
+		replay, err := http.NewRequest(http.MethodPost, srv.URL+"/b", nil)
+		require.NoError(t, err)
+		for _, h := range []string{valiss.HeaderAccountToken, valiss.HeaderTimestamp, valiss.HeaderSignature} {
+			replay.Header.Set(h, captured.Get(h))
+		}
+		resp, err := http.DefaultClient.Do(replay)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		assert.Contains(t, string(body), "signature verification failed")
+	})
+}
+
+// roundTripCapture is a base RoundTripper that records the outgoing request
+// headers instead of sending them, for replay tests.
+type roundTripCapture func(*http.Request) (*http.Response, error)
+
+func (f roundTripCapture) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func captureInto(dst *http.Header) roundTripCapture {
+	return func(r *http.Request) (*http.Response, error) {
+		*dst = r.Header.Clone()
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}}, nil
+	}
 }
 
 // TestUserChain proves user-level creds authenticate through the middleware
