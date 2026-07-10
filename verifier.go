@@ -37,9 +37,11 @@ type Identity struct {
 }
 
 // ClaimsValidator is custom validation logic injected into the Verifier. It
-// runs after the token chain is verified and the identity is assembled, and
-// before the request signature check. A non-nil error rejects the request as
-// unauthenticated.
+// runs after the token chain is verified, the identity is assembled, and the
+// request signature has proven possession of the subject seed (a bearer user
+// token waives the signature). A non-nil error rejects the request as
+// unauthenticated. Running post-possession means an expensive validator is
+// never triggered by a party that merely captured a token but cannot sign.
 type ClaimsValidator func(req Request, id *Identity) error
 
 // ExtValidator adapts a typed validator over the extension claim named by
@@ -248,6 +250,21 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		}
 		id.User = user
 	}
+	// Prove possession of the subject seed before running any
+	// consumer-supplied hook, so extension checks and validators only ever
+	// see requests whose sender holds the key (a bearer user token waives
+	// the signature by design).
+	subject := id.Account.Subject
+	if id.User != nil {
+		subject = id.User.Subject
+	}
+	if req.Timestamp == "" && req.Signature == "" {
+		if id.User == nil || !id.User.Bearer {
+			return nil, errors.New("valiss: request signature required: not a bearer token")
+		}
+	} else if err := VerifySignature(subject, req.Timestamp, req.Signature, now, v.skew); err != nil {
+		return nil, err
+	}
 	for _, check := range v.extChecks {
 		if err := check(id.Account.Ext); err != nil {
 			return nil, err
@@ -262,19 +279,6 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		if err := validate(req, id); err != nil {
 			return nil, err
 		}
-	}
-	subject := id.Account.Subject
-	if id.User != nil {
-		subject = id.User.Subject
-	}
-	if req.Timestamp == "" && req.Signature == "" {
-		if id.User == nil || !id.User.Bearer {
-			return nil, errors.New("valiss: request signature required: not a bearer token")
-		}
-		return id, nil
-	}
-	if err := VerifySignature(subject, req.Timestamp, req.Signature, now, v.skew); err != nil {
-		return nil, err
 	}
 	return id, nil
 }

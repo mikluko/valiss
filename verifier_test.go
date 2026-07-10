@@ -113,13 +113,27 @@ func TestClaimsValidator(t *testing.T) {
 		assert.False(t, secondRan)
 	})
 
-	t.Run("validator runs before the bearer gate", func(t *testing.T) {
-		// A rejected bearer request reports the validator's error, not the
-		// missing-signature one.
-		custom := errors.New("nope")
-		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(func(Request, *Identity) error { return custom }))
+	t.Run("validators run only after possession is proven", func(t *testing.T) {
+		var ran bool
+		v := NewVerifier(opPub, AllowAll{}, WithClaimsValidator(func(Request, *Identity) error {
+			ran = true
+			return nil
+		}))
+		// An unsigned account request is rejected at the possession gate
+		// before the validator can run.
 		_, err := v.VerifyRequest(Request{AccountToken: acctTok})
-		assert.ErrorIs(t, err, custom)
+		assert.ErrorContains(t, err, "not a bearer token")
+		assert.False(t, ran, "validator must not run before possession is proven")
+
+		// A signature failure likewise short-circuits before the validator.
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: "AAAA"})
+		assert.Error(t, err)
+		assert.False(t, ran)
+
+		// With a valid signature the validator runs.
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
+		require.NoError(t, err)
+		assert.True(t, ran)
 	})
 
 	t.Run("typed extension validator", func(t *testing.T) {
