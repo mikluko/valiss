@@ -60,10 +60,28 @@ func TestParseMissingMarker(t *testing.T) {
 	assert.ErrorContains(t, err, "no token markers")
 }
 
-func TestParseUnclosedSection(t *testing.T) {
-	_, err := Parse("-----BEGIN VALISS ACCOUNT TOKEN-----\n" + testToken + "\n")
-	require.NoError(t, err, "content line closes the read")
+func TestParseStrictSection(t *testing.T) {
+	const begin = "-----BEGIN VALISS ACCOUNT TOKEN-----"
+	const end = "------END VALISS ACCOUNT TOKEN------"
 
-	_, err = Parse("-----BEGIN VALISS ACCOUNT TOKEN-----\n")
-	assert.ErrorContains(t, err, "not closed")
+	t.Run("content without the end marker is rejected", func(t *testing.T) {
+		_, err := Parse(begin + "\n" + testToken + "\n")
+		assert.ErrorContains(t, err, "not closed")
+	})
+
+	t.Run("empty section is rejected", func(t *testing.T) {
+		_, err := Parse(begin + "\n")
+		assert.ErrorContains(t, err, "not closed")
+	})
+
+	t.Run("trailing content before the end marker is rejected", func(t *testing.T) {
+		_, err := Parse(begin + "\n" + testToken + "\ngarbage\n" + end + "\n")
+		assert.ErrorContains(t, err, "unexpected content")
+	})
+
+	t.Run("well-formed section parses", func(t *testing.T) {
+		got, err := Parse(begin + "\n" + testToken + "\n" + end + "\n")
+		require.NoError(t, err)
+		assert.Equal(t, testToken, got.AccountToken)
+	})
 }

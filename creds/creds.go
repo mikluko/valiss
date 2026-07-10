@@ -102,20 +102,33 @@ func Load(path string) (Creds, error) {
 	return Parse(string(raw))
 }
 
-// between returns the first non-empty line strictly between a begin and end
-// marker. The bool is false when the begin marker is absent; a present but
-// empty or unclosed section is an error.
+// between returns the single non-empty line strictly between a begin and end
+// marker. The bool is false when the begin marker is absent. A present
+// section is strict: it must hold exactly one payload line followed by the
+// end marker. An empty, unclosed, or multi-line section is an error, so a
+// truncated or mangled creds file fails here rather than downstream as a
+// confusing cryptographic error.
 func between(contents, begin, end string) (string, bool, error) {
 	inside := false
+	payload := ""
 	for line := range strings.Lines(contents) {
 		line = strings.TrimSpace(line)
 		switch {
 		case line == begin:
 			inside = true
-		case inside && line == end:
-			return "", false, fmt.Errorf("no content before %q", end)
-		case inside && line != "":
-			return line, true, nil
+		case !inside:
+			// outside the section; ignore.
+		case line == end:
+			if payload == "" {
+				return "", false, fmt.Errorf("no content before %q", end)
+			}
+			return payload, true, nil
+		case line == "":
+			// blank line within the section; ignore.
+		case payload == "":
+			payload = line
+		default:
+			return "", false, fmt.Errorf("unexpected content in %q section", begin)
 		}
 	}
 	if inside {
