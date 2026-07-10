@@ -2,6 +2,7 @@ package valiss
 
 import (
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -107,6 +108,8 @@ type Verifier struct {
 	validators     []ClaimsValidator
 	extChecks      []func(Extensions) error
 	resolver       AccountTokenResolver
+	operator       *OperatorClaims
+	operatorErr    error
 }
 
 // VerifierOption configures a Verifier.
@@ -148,6 +151,19 @@ func WithAccountTokenResolver(fn AccountTokenResolver) VerifierOption {
 	return func(v *Verifier) { v.resolver = fn }
 }
 
+// WithOperatorToken supplies the trust domain's self-signed operator token
+// and enforces its policy on every request: the operator token must be
+// within its own validity window, and every account and user token must
+// echo its epoch. Bumping the epoch in a fresh operator token therefore
+// revokes everything minted in earlier epochs at once. The pinned operator
+// public key remains the trust anchor; a token not self-signed by it poisons
+// the verifier so every request fails rather than silently skipping policy.
+func WithOperatorToken(token string) VerifierOption {
+	return func(v *Verifier) {
+		v.operator, v.operatorErr = VerifyOperator(token, v.operatorPubKey)
+	}
+}
+
 func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOption) *Verifier {
 	v := &Verifier{
 		operatorPubKey: operatorPubKey,
@@ -170,6 +186,9 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 // bearer request, accepted only when the effective token is a bearer user
 // token; account-level requests must always sign.
 func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
+	if v.operatorErr != nil {
+		return nil, fmt.Errorf("valiss: operator token misconfigured: %w", v.operatorErr)
+	}
 	if req.AccountToken == "" {
 		if req.UserToken == "" {
 			return nil, errors.New("valiss: missing credentials")
@@ -192,6 +211,17 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		return nil, err
 	}
 	now := v.now()
+	if v.operator != nil {
+		if v.operator.Expired(now, v.skew) {
+			return nil, errors.New("valiss: operator token expired: the trust domain is closed")
+		}
+		if v.operator.NotYetValid(now, v.skew) {
+			return nil, errors.New("valiss: operator token not yet valid")
+		}
+		if account.Epoch != v.operator.Epoch {
+			return nil, fmt.Errorf("valiss: account token epoch %d, trust domain epoch %d", account.Epoch, v.operator.Epoch)
+		}
+	}
 	if account.Expired(now, v.skew) {
 		return nil, errors.New("valiss: account token expired")
 	}
@@ -206,6 +236,9 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		user, err := VerifyUser(req.UserToken, account.Subject)
 		if err != nil {
 			return nil, err
+		}
+		if v.operator != nil && user.Epoch != v.operator.Epoch {
+			return nil, fmt.Errorf("valiss: user token epoch %d, trust domain epoch %d", user.Epoch, v.operator.Epoch)
 		}
 		if user.Expired(now, v.skew) {
 			return nil, errors.New("valiss: user token expired")

@@ -1,5 +1,5 @@
 // Package valiss implements the core of the tenant authentication scheme,
-// modeled on NATS operator/account/user credentials:
+// a three-level chain of Ed25519 keys:
 //
 //   - An operator holds an Ed25519 nkey; its public key is the trust anchor
 //     servers pin.
@@ -15,7 +15,7 @@
 //
 // Tokens are this scheme's own typed claims carried in an nkey-signed JWT:
 // the sub claim is the subject's public key and name carries the
-// human-readable label, as in NATS. Key levels are strict: operator keys
+// human-readable label. Key levels are strict: operator keys
 // (SO.../O...) sign account tokens for account keys (SA.../A...), account
 // keys sign user tokens for user keys (SU.../U...).
 //
@@ -57,12 +57,25 @@ type Claims struct {
 	NotBefore time.Time
 }
 
+// OperatorClaims is the verified content of a self-signed operator token:
+// the trust domain's policy statement, signed by the pinned anchor key.
+type OperatorClaims struct {
+	Claims
+	// Epoch is the trust domain's current epoch. A verifier configured with
+	// the operator token accepts only account and user tokens that echo it.
+	Epoch uint64
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions
+}
+
 // AccountClaims is the verified content of an account (tenant) token.
 type AccountClaims struct {
 	Claims
 	// Name is the tenant's human-readable label; it segments all stored
 	// data. Falls back to the subject key when the token carries no name.
 	Name string
+	// Epoch is the trust-domain epoch the token was issued in (WithEpoch).
+	Epoch uint64
 	// Ext carries the named extension claims (WithExtension).
 	Ext Extensions
 }
@@ -73,6 +86,8 @@ type UserClaims struct {
 	// Name is the user's human-readable label. Falls back to the subject
 	// key when the token carries no name.
 	Name string
+	// Epoch is the trust-domain epoch the token was issued in (WithEpoch).
+	Epoch uint64
 	// Bearer marks a token whose holder authenticates by the token alone,
 	// without per-request signatures.
 	Bearer bool
@@ -90,13 +105,14 @@ type Extension interface {
 type issueConfig struct {
 	expires   int64
 	notBefore int64
+	epoch     uint64
 	bearer    bool
 	ext       Extensions
 	err       error
 }
 
 // IssueOption customizes a minted token. Without a WithTTL or WithExpiry
-// option the token never expires, matching nsc's default.
+// option the token never expires.
 type IssueOption func(*issueConfig)
 
 // WithTTL makes the token expire ttl from now (the JWT exp claim).
@@ -109,8 +125,7 @@ func WithExpiry(t time.Time) IssueOption {
 	return func(c *issueConfig) { c.expires = t.Unix() }
 }
 
-// WithNotBefore makes the token invalid before t (the JWT nbf claim), like
-// nsc's --start.
+// WithNotBefore makes the token invalid before t (the JWT nbf claim).
 func WithNotBefore(t time.Time) IssueOption {
 	return func(c *issueConfig) { c.notBefore = t.Unix() }
 }
@@ -121,6 +136,15 @@ func WithNotBefore(t time.Time) IssueOption {
 // short validity window. Only IssueUser accepts this option.
 func WithBearer() IssueOption {
 	return func(c *issueConfig) { c.bearer = true }
+}
+
+// WithEpoch stamps the trust-domain epoch on the token. On an operator
+// token it declares the domain's current epoch; on account and user tokens
+// it must echo it. Verifiers configured with the operator token reject
+// tokens from any other epoch, so bumping the epoch and re-minting rotates
+// the whole domain at once. Unstamped tokens are epoch 0.
+func WithEpoch(epoch uint64) IssueOption {
+	return func(c *issueConfig) { c.epoch = epoch }
 }
 
 // WithExtension embeds a named extension claim into the token's ext field;
@@ -151,10 +175,37 @@ func WithExtension(v Extension) IssueOption {
 	}
 }
 
-// Issue mints an account token signed by the operator key. As in NATS, the
-// token subject is the tenant's account public key and name carries the
-// tenant id; the tenant signs requests with the seed matching the subject
-// key.
+// IssueOperator mints the self-signed operator token: the trust domain's
+// policy statement (epoch, validity window, extensions), signed by the
+// operator key over its own public key. Servers configured with it via
+// WithOperatorToken enforce the policy on every request; the pinned public
+// key remains the trust anchor.
+func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) {
+	pub, err := operator.PublicKey()
+	if err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
+		return "", errors.New("valiss: operator tokens must be signed by an operator-type nkey (expected an SO... seed)")
+	}
+	var cfg issueConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	if cfg.err != nil {
+		return "", cfg.err
+	}
+	if cfg.bearer {
+		return "", errors.New("valiss: bearer applies only to user tokens")
+	}
+	return encodeToken(operator, &wire[operatorBody]{
+		Subject:   pub,
+		Expires:   cfg.expires,
+		NotBefore: cfg.notBefore,
+		Valiss:    operatorBody{Type: operatorType, Epoch: cfg.epoch, Ext: cfg.ext},
+	})
+}
+
+// Issue mints an account token signed by the operator key. The token
+// subject is the tenant's account public key and name carries the tenant
+// id; the tenant signs requests with the seed matching the subject key.
 func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
 		return "", errors.New("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
@@ -177,13 +228,13 @@ func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOptio
 		Subject:   tenantPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    accountBody{Type: accountType, Ext: cfg.ext},
+		Valiss:    accountBody{Type: accountType, Epoch: cfg.epoch, Ext: cfg.ext},
 	})
 }
 
 // IssueUser mints a user token signed by a tenant's account key, delegating
-// to an end user. As in NATS, the token subject is the user's public key and
-// name carries the user id. WithBearer produces a token the server accepts
+// to an end user. The token subject is the user's public key and name
+// carries the user id. WithBearer produces a token the server accepts
 // without per-request signatures.
 func IssueUser(account nkeys.KeyPair, name, userPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := account.PublicKey(); err != nil || !nkeys.IsValidPublicAccountKey(pub) {
@@ -204,8 +255,32 @@ func IssueUser(account nkeys.KeyPair, name, userPubKey string, opts ...IssueOpti
 		Subject:   userPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    userBody{Type: userType, Bearer: cfg.bearer, Ext: cfg.ext},
+		Valiss:    userBody{Type: userType, Epoch: cfg.epoch, Bearer: cfg.bearer, Ext: cfg.ext},
 	})
+}
+
+// VerifyOperator decodes a self-signed operator token, checks its type and
+// that it is signed by the pinned operator key over itself, and returns the
+// claims. Expiry and activation checks belong to the Verifier.
+func VerifyOperator(token, operatorPubKey string) (*OperatorClaims, error) {
+	c, err := decodeToken[operatorBody](token)
+	if err != nil {
+		return nil, err
+	}
+	if c.Valiss.Type != operatorType {
+		return nil, fmt.Errorf("valiss: not an operator token (type %q)", c.Valiss.Type)
+	}
+	if c.Issuer != operatorPubKey || c.Subject != operatorPubKey {
+		return nil, errors.New("valiss: operator token not self-signed by the expected operator")
+	}
+	if !nkeys.IsValidPublicOperatorKey(c.Subject) {
+		return nil, errors.New("valiss: operator token subject is not an operator public key")
+	}
+	return &OperatorClaims{
+		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
+		Epoch:  c.Valiss.Epoch,
+		Ext:    c.Valiss.Ext,
+	}, nil
 }
 
 // VerifyAccount decodes an account token, checks its type, signature, and
@@ -228,6 +303,7 @@ func VerifyAccount(token, operatorPubKey string) (*AccountClaims, error) {
 	return &AccountClaims{
 		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
 		Name:   nameOf(c.Name, c.Subject),
+		Epoch:  c.Valiss.Epoch,
 		Ext:    c.Valiss.Ext,
 	}, nil
 }
@@ -252,6 +328,7 @@ func VerifyUser(token, accountPubKey string) (*UserClaims, error) {
 	return &UserClaims{
 		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
 		Name:   nameOf(c.Name, c.Subject),
+		Epoch:  c.Valiss.Epoch,
 		Bearer: c.Valiss.Bearer,
 		Ext:    c.Valiss.Ext,
 	}, nil

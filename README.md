@@ -1,15 +1,16 @@
 # valiss
 
 **VAL**idator-**ISS**uer: decentralized tenant authentication for Go
-services, gRPC and HTTP, modeled on NATS operator/account/user credentials.
+services, gRPC and HTTP, built on a three-level chain of Ed25519 keys:
+operator → account → user.
 
 Most multi-tenant services end up with a central auth dependency: an OAuth
 provider, a session store, a per-tenant key registry — something every
-request has to consult and every deployment has to keep alive. valiss takes
-the NATS approach instead. Trust is a single public key baked into the
-server; everything else is self-contained signed credentials that verify
-offline. There is no auth service to run, no token introspection endpoint to
-call, and issuing credentials never touches production infrastructure.
+request has to consult and every deployment has to keep alive. valiss
+inverts that. Trust is a single public key baked into the server;
+everything else is self-contained signed credentials that verify offline.
+There is no auth service to run, no token introspection endpoint to call,
+and issuing credentials never touches production infrastructure.
 
 Where it fits:
 
@@ -38,7 +39,29 @@ Key types map to nkeys directly: operator `SO...`/`O...`, account
 `SA...`/`A...`, user `SU...`/`U...`. Tokens are valiss's own typed claims in
 an nkey-signed JWT: `sub` is the subject's public key, `name` the
 human-readable label, validity via optional absolute `exp`/`nbf` (absent
-`exp` = never expires, as in nsc).
+`exp` = never expires).
+
+## Rotation and mass revocation
+
+The operator can publish a self-signed **operator token**: a policy
+statement over the trust domain, carrying an **epoch** counter and an
+optional validity window. Verifiers configured with it accept only account
+and user tokens stamped with the current epoch:
+
+```go
+opTok, _ := valiss.IssueOperator(operator, valiss.WithEpoch(3))
+acct, _  := valiss.Issue(operator, "acme", acctPub, valiss.WithEpoch(3), ...)
+
+verifier := valiss.NewVerifier(operatorPub, allowlist,
+    valiss.WithOperatorToken(opTok))
+```
+
+Bumping the epoch and re-minting rotates the whole domain: every token from
+earlier epochs is rejected cryptographically, no allowlist edits. The
+operator token's own `exp` bounds the entire domain, forcing a periodic
+rotation ceremony. The pinned public key remains the trust anchor — the
+operator token only carries policy signed by it. Selective revocation stays
+with the allowlist; the two levers are complementary.
 
 ## Extensions
 
@@ -99,7 +122,7 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
 - root (`github.com/mikluko/valiss`) — token issue/verify (account and user
   level), request sign/verify, allowlist, the request `Verifier`, extension
   plumbing, and `IdentityFromContext`
-- `creds` — client creds file (tokens + seed, nsc style)
+- `creds` — client creds file (tokens + seed in one marker-delimited file)
 - `contrib/httpauth` — net/http middleware, client transport, HTTP extension
 - `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
 - `examples/` — runnable end-to-end demos, including the manifest-driven
@@ -147,8 +170,8 @@ client := &http.Client{Transport: transport}
 
 Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`.
 
-Servers that hold account tokens in configuration (NATS-resolver style)
-accept user-token-only requests via
+Servers that hold account tokens in static configuration accept
+user-token-only requests via
 `valiss.WithAccountTokenResolver(valiss.StaticAccountTokens(...))`.
 
 ## Minter
@@ -170,3 +193,26 @@ seeds from the environment, and writes the creds to stdout with metadata —
 including the allowlist jti — on stderr. User creds carry only the user
 token by default; `-bundle` embeds a fresh account token for servers without
 a resolver. See [`examples/minter/README.md`](examples/minter/README.md).
+
+## Prior art
+
+valiss stands on well-trodden ground; these shaped it or solve neighboring
+problems:
+
+- [NATS JWT authentication](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/jwt)
+  and [`nsc`](https://github.com/nats-io/nsc) — the operator/account/user
+  delegation model and the creds-file format originate here; valiss adapts
+  them to request/response services and strips the messaging-specific parts.
+- [RFC 7519 (JWT)](https://www.rfc-editor.org/rfc/rfc7519) — the claims
+  vocabulary (`iss`, `sub`, `exp`, `nbf`, `iat`, `jti`) and token framing.
+- [RFC 8032 (Ed25519)](https://www.rfc-editor.org/rfc/rfc8032) — the
+  signature scheme, via [`nkeys`](https://github.com/nats-io/nkeys).
+- [golang-jwt](https://github.com/golang-jwt/jwt) — the embedded
+  registered-claims struct pattern valiss's typed claims follow.
+- [Biscuit](https://www.biscuitsec.org/) and
+  [Macaroons](https://research.google/pubs/pub41892/) — offline attenuation
+  and delegation of bearer credentials; valiss trades their in-token
+  attenuation for a fixed two-hop chain plus typed extension claims.
+- [SPIFFE/SPIRE](https://spiffe.io/) — workload identity with short-lived
+  documents and trust-domain semantics; heavier machinery aimed at
+  infrastructure identity rather than tenant credentials.

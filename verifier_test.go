@@ -239,6 +239,128 @@ func TestValidityWindow(t *testing.T) {
 	})
 }
 
+func TestOperatorToken(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	account, accountPub := tenantKeys(t)
+	user, userPub := userKeys(t)
+
+	opTok, err := IssueOperator(op, WithEpoch(2))
+	require.NoError(t, err)
+	acctTok, err := Issue(op, "acme", accountPub, WithEpoch(2), WithTTL(time.Hour))
+	require.NoError(t, err)
+	userTok, err := IssueUser(account, "alice", userPub, WithEpoch(2), WithTTL(time.Hour))
+	require.NoError(t, err)
+	ts, sig, err := SignRequest(user, time.Now())
+	require.NoError(t, err)
+	acctTS, acctSig, err := SignRequest(account, time.Now())
+	require.NoError(t, err)
+
+	v := NewVerifier(opPub, AllowAll{}, WithOperatorToken(opTok))
+
+	t.Run("matching epoch passes, both levels", func(t *testing.T) {
+		_, err := v.VerifyRequest(Request{AccountToken: acctTok, UserToken: userTok, Timestamp: ts, Signature: sig})
+		assert.NoError(t, err)
+	})
+
+	t.Run("stale account token rejected", func(t *testing.T) {
+		old, err := Issue(op, "acme", accountPub, WithEpoch(1), WithTTL(time.Hour))
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(Request{AccountToken: old, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "epoch 1, trust domain epoch 2")
+	})
+
+	t.Run("unstamped account token rejected", func(t *testing.T) {
+		unstamped, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(Request{AccountToken: unstamped, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "epoch 0, trust domain epoch 2")
+	})
+
+	t.Run("stale user token rejected even under a current account", func(t *testing.T) {
+		oldUser, err := IssueUser(account, "alice", userPub, WithEpoch(1), WithTTL(time.Hour))
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: oldUser, Timestamp: ts, Signature: sig})
+		assert.ErrorContains(t, err, "user token epoch 1")
+	})
+
+	t.Run("resolved account token is subject to the epoch too", func(t *testing.T) {
+		old, err := Issue(op, "acme", accountPub, WithEpoch(1), WithTTL(time.Hour))
+		require.NoError(t, err)
+		resolver, err := StaticAccountTokens(old)
+		require.NoError(t, err)
+		rv := NewVerifier(opPub, AllowAll{}, WithOperatorToken(opTok), WithAccountTokenResolver(resolver))
+		_, err = rv.VerifyRequest(Request{UserToken: userTok, Timestamp: ts, Signature: sig})
+		assert.ErrorContains(t, err, "epoch 1, trust domain epoch 2")
+	})
+
+	t.Run("without an operator token epochs are ignored", func(t *testing.T) {
+		lax := NewVerifier(opPub, AllowAll{})
+		old, err := Issue(op, "acme", accountPub, WithEpoch(1), WithTTL(time.Hour))
+		require.NoError(t, err)
+		_, err = lax.VerifyRequest(Request{AccountToken: old, Timestamp: acctTS, Signature: acctSig})
+		assert.NoError(t, err)
+	})
+
+	t.Run("expired operator token closes the domain", func(t *testing.T) {
+		shortOp, err := IssueOperator(op, WithEpoch(2), WithTTL(time.Second))
+		require.NoError(t, err)
+		closed := NewVerifier(opPub, AllowAll{}, WithOperatorToken(shortOp), WithSkew(0),
+			WithClock(func() time.Time { return time.Now().Add(time.Hour) }))
+		_, err = closed.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "trust domain is closed")
+	})
+
+	t.Run("foreign operator token poisons the verifier", func(t *testing.T) {
+		other, _ := issuerKeys(t)
+		foreign, err := IssueOperator(other, WithEpoch(2))
+		require.NoError(t, err)
+		bad := NewVerifier(opPub, AllowAll{}, WithOperatorToken(foreign))
+		_, err = bad.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "operator token misconfigured")
+	})
+
+	t.Run("account token rejected as operator token", func(t *testing.T) {
+		bad := NewVerifier(opPub, AllowAll{}, WithOperatorToken(acctTok))
+		_, err := bad.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "misconfigured")
+	})
+}
+
+func TestIssueOperator(t *testing.T) {
+	op, opPub := issuerKeys(t)
+
+	tok, err := IssueOperator(op, WithEpoch(7), WithTTL(time.Hour))
+	require.NoError(t, err)
+	claims, err := VerifyOperator(tok, opPub)
+	require.NoError(t, err)
+	assert.Equal(t, opPub, claims.Subject)
+	assert.Equal(t, opPub, claims.Issuer)
+	assert.Equal(t, uint64(7), claims.Epoch)
+	assert.False(t, claims.ExpiresAt.IsZero())
+
+	t.Run("non-operator signer rejected", func(t *testing.T) {
+		account, _ := tenantKeys(t)
+		_, err := IssueOperator(account)
+		assert.ErrorContains(t, err, "operator-type nkey")
+	})
+
+	t.Run("bearer rejected", func(t *testing.T) {
+		_, err := IssueOperator(op, WithBearer())
+		assert.ErrorContains(t, err, "bearer applies only to user tokens")
+	})
+
+	t.Run("wrong pinned key rejected", func(t *testing.T) {
+		_, otherPub := issuerKeys(t)
+		_, err := VerifyOperator(tok, otherPub)
+		assert.ErrorContains(t, err, "not self-signed by the expected operator")
+	})
+
+	t.Run("operator token is not an account token", func(t *testing.T) {
+		_, err := VerifyAccount(tok, opPub)
+		assert.ErrorContains(t, err, "not an account token")
+	})
+}
+
 func TestAccountTokenResolver(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)

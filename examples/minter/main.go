@@ -1,7 +1,7 @@
 // Command minter issues valiss tenant credentials for gRPC and HTTP
-// services using the operator/account/user nkey model (NATS style). It is
-// stateless: key pairs are printed once at generation and never stored;
-// signing seeds are supplied via VALISS_SEED_<PUBKEY> environment variables.
+// services using the operator/account/user nkey model. It is stateless:
+// key pairs are printed once at generation and never stored; signing seeds
+// are supplied via VALISS_SEED_<PUBKEY> environment variables.
 //
 //	minter keygen operator            # one-time: operator key pair (trust anchor)
 //	minter keygen account             # per-tenant key pair
@@ -378,8 +378,7 @@ func fatal(err error) {
 //
 // The manifest is deterministic: validity boundaries are absolute RFC3339
 // timestamps (expires, not_before), so re-minting against the same manifest
-// yields the same validity window. An entry without expires never expires,
-// matching nsc's default.
+// yields the same validity window. An entry without expires never expires.
 
 // User describes one end user under an account. A user entry either binds a
 // key (present in the manifest or generated at mint time) or is an explicit

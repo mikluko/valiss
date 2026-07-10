@@ -13,16 +13,29 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
-// Wire format: a JWT signed with an nkey, NATS style ("ed25519-nkey"
-// algorithm, jti derived from the claims hash). Standard claims follow RFC
-// 7519; the valiss section carries this scheme's own claim bodies, typed by
-// its type field.
+// Wire format: a JWT signed with an nkey ("ed25519-nkey" algorithm, jti
+// derived from the claims hash). Standard claims follow RFC 7519; the
+// valiss section carries this scheme's own claim bodies, typed by its type
+// field.
 const (
 	tokenHeader = `{"typ":"JWT","alg":"ed25519-nkey"}`
 
-	accountType = "account"
-	userType    = "user"
+	operatorType = "operator"
+	accountType  = "account"
+	userType     = "user"
 )
+
+// operatorBody is the valiss section of a self-signed operator token: the
+// trust domain's policy statement.
+type operatorBody struct {
+	// Type discriminates the claim body; always "operator".
+	Type string `json:"type"`
+	// Epoch is the trust domain's current epoch; account and user tokens
+	// must echo it when the verifier is configured with the operator token.
+	Epoch uint64 `json:"epoch,omitempty"`
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions `json:"ext,omitempty"`
+}
 
 // Extensions is the named extension claims of a token: consumer- or
 // transport-defined claim bodies keyed by extension name. This scheme signs
@@ -34,6 +47,8 @@ type Extensions map[string]json.RawMessage
 type accountBody struct {
 	// Type discriminates the claim body; always "account".
 	Type string `json:"type"`
+	// Epoch is the trust-domain epoch the token was issued in.
+	Epoch uint64 `json:"epoch,omitempty"`
 	// Ext carries the named extension claims (WithExtension).
 	Ext Extensions `json:"ext,omitempty"`
 }
@@ -42,6 +57,8 @@ type accountBody struct {
 type userBody struct {
 	// Type discriminates the claim body; always "user".
 	Type string `json:"type"`
+	// Epoch is the trust-domain epoch the token was issued in.
+	Epoch uint64 `json:"epoch,omitempty"`
 	// Bearer marks a token the server accepts without per-request
 	// signatures.
 	Bearer bool `json:"bearer,omitempty"`

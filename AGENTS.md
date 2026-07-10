@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-valiss (VALidator-ISSuer) is a Go library for tenant authentication in gRPC and HTTP services, modeled on NATS operator/account/user credentials. Module: `github.com/mikluko/valiss`, root package `valiss`. Library-first: there is no product binary, only `examples/`. No Makefile or lint config; plain Go toolchain. Only real dependencies: nkeys, yaml, grpc; tokens are hand-rolled nkey-signed JWTs (no NATS jwt library).
+valiss (VALidator-ISSuer) is a Go library for decentralized tenant authentication in gRPC and HTTP services: a three-level chain of Ed25519 keys (operator → account → user). Module: `github.com/mikluko/valiss`, root package `valiss`. Library-first: there is no product binary, only `examples/`. No Makefile or lint config; plain Go toolchain. Only real dependencies: nkeys, yaml, grpc; tokens are hand-rolled nkey-signed JWTs.
 
 ## Commands
 
@@ -19,9 +19,9 @@ go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpau
 
 ## Architecture
 
-Three-level trust chain modeled on NATS, all rooted in Ed25519 nkeys: an **operator** (`SO...`/`O...`) signs **account** (tenant, `SA...`/`A...`) tokens; an account may sign **user** (`SU...`/`U...`) tokens. Servers pin only the operator public key.
+Three-level trust chain rooted in Ed25519 nkeys: an **operator** (`SO...`/`O...`) signs **account** (tenant, `SA...`/`A...`) tokens; an account may sign **user** (`SU...`/`U...`) tokens. Servers pin only the operator public key. The operator may additionally publish a self-signed **operator token** (`IssueOperator`) carrying domain policy: an `epoch` counter plus an optional validity window; `WithOperatorToken` on the verifier enforces that every account and user token echoes the current epoch (`WithEpoch` at mint), making an epoch bump + re-mint a cryptographic mass revocation, and the operator token's own `exp` a domain-wide expiry.
 
-Tokens are valiss's own typed claims (claims.go): RFC 7519 standard fields plus a `valiss` section (`type`, `bearer`, and named `ext` extensions). As in NATS, `sub` is the subject's public key (no keyless subjects) and `name` carries the human label. Validity is absolute and optional: no `exp` = never expires (nsc default); `nbf` supported. Go-side, the base `Claims` struct is RFC-only (jti/iss/sub/iat/exp/nbf); `AccountClaims{Claims, Name, Ext}` and `UserClaims{Claims, Name, Bearer, Ext}` embed it, golang-jwt/NATS style.
+Tokens are valiss's own typed claims (claims.go): RFC 7519 standard fields plus a `valiss` section (`type`, `epoch`, `bearer`, and named `ext` extensions). `sub` is the subject's public key (no keyless subjects) and `name` carries the human label. Validity is absolute and optional: no `exp` = never expires; `nbf` supported. Go-side, the base `Claims` struct is RFC-only (jti/iss/sub/iat/exp/nbf); `OperatorClaims`, `AccountClaims{Claims, Name, Epoch, Ext}` and `UserClaims{Claims, Name, Epoch, Bearer, Ext}` embed it via the golang-jwt-style registered-claims pattern.
 
 Per-request verification (`valiss.Verifier.VerifyRequest(Request) (*Identity, error)`, where `Identity{Account *AccountClaims, User *UserClaims}` and `User` is nil for account-level requests):
 
@@ -37,7 +37,7 @@ Extensions are self-naming: `Extension interface{ ExtensionName() string }`, min
 Layout:
 
 - root — token issue/verify (`Issue`/`IssueUser`, `VerifyAccount`/`VerifyUser`/`Decode`), `SignRequest`/`VerifySignature`, `Allowlist`, `Verifier`, extension plumbing, `IdentityFromContext`. `VerifyAccount`/`VerifyUser` deliberately do NOT check expiry or allowlist; `Verifier` layers those so callers get precise errors. `Decode` returns RFC-only `Claims` without establishing trust (tooling).
-- `creds` — client creds file (`Creds`: optional account token + optional user token + optional seed; at least one token), nsc-creds-style markers. A *bundle* is user creds that also embed the account token; bearer creds have no seed.
+- `creds` — client creds file (`Creds`: optional account token + optional user token + optional seed; at least one token), marker-delimited text. A *bundle* is user creds that also embed the account token; bearer creds have no seed.
 - `contrib/httpauth`, `contrib/grpcauth` — transport adapters over `valiss.Verifier`: header extraction, error mapping (401/403, Unauthenticated/PermissionDenied), extension enforcement, client-side attachment, all constructed from a `creds.Creds`. Wire headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`, `valiss-signature` (`valiss.Header*` constants).
 - `examples/minter` — the manifest-driven minting tool (single-file, manifest types included), an example rather than a product. Deterministic manifest (`minter.yaml`): one operator, nested accounts/users by `name`, absolute RFC3339 `expires`/`not_before`, seeds only from `VALISS_SEED_<PUBKEY>` env vars. Creds → stdout, metadata (allowlist jti) → stderr; `-bundle` embeds a fresh account token.
 
@@ -48,4 +48,5 @@ Layout:
 - All authorization lives in typed extension claims (transport or domain); there is no scope-string mechanism. Base `Claims` stays RFC 7519-only; anything valiss-specific goes on the typed claim structs or into extensions.
 - Terminology: *creds* = the credentials file (subject token + seed); *bundle* = user creds that also carry the upstream account token.
 - Tests use `valiss.WithClock` to inject time; prefer that over sleeping.
+- Influences (NATS/nsc, RFC 7519, golang-jwt, Biscuit/Macaroons, SPIFFE) are acknowledged in the README's Prior art section only; do not describe valiss as "NATS-like" or "modeled on NATS" in docs or comments.
 - The example CLI's `keygen` writes the key pair to stdout and guidance to stderr so redirected output stays parseable; keep that separation.

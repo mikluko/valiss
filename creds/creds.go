@@ -1,5 +1,5 @@
 // Package creds implements the client credentials file: the subject's token
-// plus the seed that signs its requests, modeled on the nsc creds format.
+// plus the seed that signs its requests, in one marker-delimited text file.
 // A creds file is everything a client needs.
 //
 // Account-level creds hold the operator-signed account token and the account
@@ -7,8 +7,8 @@
 // seed; the server resolves the account token itself. A *bundle* is the kind
 // of creds that additionally carries the upstream account token, for servers
 // that do not resolve it. Bearer creds carry tokens only: their holder
-// cannot sign requests and the server accepts them only when the token
-// grants the bearer scope.
+// cannot sign requests and the server accepts them only when the effective
+// token is a bearer user token.
 package creds
 
 import (

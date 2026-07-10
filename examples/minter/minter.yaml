@@ -34,7 +34,7 @@ accounts:
   - name: acme              # tenant name; segments all stored data
     key: AC4BYRVFUKRB7R4QEHSQFGV7R6HDIAMGR2C6GPAOUD3BANKQ4G44JQU4
     # Validity boundaries are absolute RFC3339 timestamps, so re-minting is
-    # deterministic. Omitted expires = the token never expires (nsc default);
+    # deterministic. Omitted expires = the token never expires;
     # omitted not_before = valid immediately. Authorization lives in typed
     # extension claims, which are a programmatic-issuance feature; this tool
     # mints plain identity tokens.
