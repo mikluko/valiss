@@ -44,12 +44,14 @@ func NewMiddleware(verifier *valiss.Verifier, opts ...Option) func(http.Handler)
 }
 
 func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	nonce := r.Header.Get(valiss.HeaderNonce)
 	req := valiss.Request{
 		AccountToken: r.Header.Get(valiss.HeaderAccountToken),
 		UserToken:    r.Header.Get(valiss.HeaderUserToken),
 		Timestamp:    r.Header.Get(valiss.HeaderTimestamp),
 		Signature:    r.Header.Get(valiss.HeaderSignature),
-		Context:      requestContext(r),
+		Context:      requestContext(r, nonce),
+		Nonce:        nonce,
 	}
 	if req.AccountToken == "" && req.UserToken == "" {
 		http.Error(w, "missing credentials", http.StatusUnauthorized)

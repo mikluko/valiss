@@ -13,6 +13,7 @@ const (
 	HeaderUserToken    = "valiss-user-token"
 	HeaderTimestamp    = "valiss-timestamp"
 	HeaderSignature    = "valiss-signature"
+	HeaderNonce        = "valiss-nonce"
 )
 
 // Request is the per-request material a transport extracts from headers.
@@ -31,6 +32,10 @@ type Request struct {
 	// it from the incoming request and the client signs the identical bytes;
 	// a mismatch fails the signature. Nil binds nothing beyond the timestamp.
 	Context []byte
+	// Nonce is a per-request unique value, folded into Context by the
+	// transport so it is signed. A Verifier with a ReplayCache requires it
+	// and rejects a nonce it has already seen.
+	Nonce string
 }
 
 // Identity is the verified result of a request.
@@ -67,6 +72,16 @@ func ExtValidator[T Extension](fn func(req Request, id *Identity, acct, user T) 
 		}
 		return fn(req, id, acct, user)
 	}
+}
+
+// ReplayCache records request nonces and reports duplicates within a
+// retention window, so a captured request cannot be replayed for the same
+// operation before its signature ages out. Implementations must be safe for
+// concurrent use and may be backed by memory or shared storage.
+type ReplayCache interface {
+	// SeenBefore records nonce with the given expiry and reports whether it
+	// was already present. expiry is when the entry may be discarded.
+	SeenBefore(nonce string, expiry time.Time) bool
 }
 
 // AccountTokenResolver supplies the operator-signed account token for an
@@ -117,6 +132,7 @@ type Verifier struct {
 	resolver       AccountTokenResolver
 	operator       *OperatorClaims
 	operatorErr    error
+	replay         ReplayCache
 }
 
 // VerifierOption configures a Verifier.
@@ -156,6 +172,16 @@ func WithExtensionType[T Extension]() VerifierOption {
 // rejected.
 func WithAccountTokenResolver(fn AccountTokenResolver) VerifierOption {
 	return func(v *Verifier) { v.resolver = fn }
+}
+
+// WithReplayCache rejects a signed request whose nonce the cache has already
+// seen, suppressing replay of the same request within the skew window.
+// Signed requests must then carry a nonce (the client transport must enable
+// it); bearer requests, which carry no signature, are unaffected. The nonce
+// is retained for twice the skew window, the longest a replay could still
+// land inside a valid timestamp window.
+func WithReplayCache(cache ReplayCache) VerifierOption {
+	return func(v *Verifier) { v.replay = cache }
 }
 
 // WithOperatorToken supplies the trust domain's self-signed operator token
@@ -267,8 +293,18 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		if id.User == nil || !id.User.Bearer {
 			return nil, errors.New("valiss: request signature required: not a bearer token")
 		}
-	} else if err := VerifySignature(subject, req.Timestamp, req.Signature, req.Context, now, v.skew); err != nil {
-		return nil, err
+	} else {
+		if err := VerifySignature(subject, req.Timestamp, req.Signature, req.Context, now, v.skew); err != nil {
+			return nil, err
+		}
+		if v.replay != nil {
+			if req.Nonce == "" {
+				return nil, errors.New("valiss: request nonce required")
+			}
+			if v.replay.SeenBefore(req.Nonce, now.Add(2*v.skew)) {
+				return nil, errors.New("valiss: request nonce already seen (replay)")
+			}
+		}
 	}
 	for _, check := range v.extChecks {
 		if err := check(id.Account.Ext); err != nil {

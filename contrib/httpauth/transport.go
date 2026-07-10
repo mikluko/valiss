@@ -22,12 +22,23 @@ type Transport struct {
 	userToken    string
 	subject      nkeys.KeyPair
 	now          func() time.Time
+	nonce        func() string
+}
+
+// TransportOption configures a Transport.
+type TransportOption func(*Transport)
+
+// WithNonce attaches a fresh per-request nonce (folded into the signature)
+// so a server built with valiss.WithReplayCache can suppress replays. Enable
+// it on the client whenever the server has a replay cache.
+func WithNonce() TransportOption {
+	return func(t *Transport) { t.nonce = valiss.NewNonce }
 }
 
 // NewTransport builds a client transport from parsed creds: the tokens
 // they carry and the seed matching the effective token's bound key (nil
 // for bearer creds). A nil base means http.DefaultTransport.
-func NewTransport(b creds.Creds, base http.RoundTripper) (*Transport, error) {
+func NewTransport(b creds.Creds, base http.RoundTripper, opts ...TransportOption) (*Transport, error) {
 	t := &Transport{base: base, accountToken: b.AccountToken, userToken: b.UserToken, now: time.Now}
 	if len(b.Seed) > 0 {
 		subject, err := nkeys.FromSeed(b.Seed)
@@ -35,6 +46,9 @@ func NewTransport(b creds.Creds, base http.RoundTripper) (*Transport, error) {
 			return nil, fmt.Errorf("valiss: creds seed: %w", err)
 		}
 		t.subject = subject
+	}
+	for _, opt := range opts {
+		opt(t)
 	}
 	return t, nil
 }
@@ -49,7 +63,12 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.Header.Set(valiss.HeaderUserToken, t.userToken)
 	}
 	if t.subject != nil {
-		timestamp, signature, err := valiss.SignRequest(t.subject, t.now(), requestContext(req))
+		nonce := ""
+		if t.nonce != nil {
+			nonce = t.nonce()
+			req.Header.Set(valiss.HeaderNonce, nonce)
+		}
+		timestamp, signature, err := valiss.SignRequest(t.subject, t.now(), requestContext(req, nonce))
 		if err != nil {
 			return nil, err
 		}
@@ -66,14 +85,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 var _ http.RoundTripper = (*Transport)(nil)
 
 // requestContext is the canonical request-context bytes the signature is
-// bound to: method, host, and path. The client (RoundTrip, absolute URL) and
-// the server (ServeHTTP, Host header + path) must derive identical bytes, so
-// the host is taken from r.Host with a fallback to the URL, and the query is
-// excluded. Method and path are matched exactly.
-func requestContext(r *http.Request) []byte {
+// bound to: method, host, path, and the per-request nonce. The client
+// (RoundTrip, absolute URL) and the server (ServeHTTP, Host header + path)
+// must derive identical bytes, so the host is taken from r.Host with a
+// fallback to the URL, and the query is excluded. Method and path are
+// matched exactly. The nonce is empty when replay suppression is not in use.
+func requestContext(r *http.Request, nonce string) []byte {
 	host := r.Host
 	if host == "" {
 		host = r.URL.Host
 	}
-	return []byte("http\n" + r.Method + "\n" + host + "\n" + r.URL.Path)
+	return []byte("http\n" + r.Method + "\n" + host + "\n" + r.URL.Path + "\n" + nonce)
 }

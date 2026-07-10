@@ -1,6 +1,7 @@
 package valiss
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -12,6 +13,16 @@ import (
 
 // DefaultSkew bounds request-timestamp drift and token-expiry slack.
 const DefaultSkew = 2 * time.Minute
+
+// NewNonce returns a fresh random per-request nonce (128 bits, hex). Client
+// transports use it when a replay cache is in play; see WithReplayCache.
+func NewNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("valiss: nonce entropy: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // signedPayload is the canonical byte string a subject signs per request: the
 // timestamp bound to a hash of the request context. Binding the context (the

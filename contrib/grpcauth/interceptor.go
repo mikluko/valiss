@@ -50,12 +50,14 @@ func (a *Authenticator) authenticate(ctx context.Context, fullMethod string) (co
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing request metadata")
 	}
+	nonce := first(md, valiss.HeaderNonce)
 	req := valiss.Request{
 		AccountToken: first(md, valiss.HeaderAccountToken),
 		UserToken:    first(md, valiss.HeaderUserToken),
 		Timestamp:    first(md, valiss.HeaderTimestamp),
 		Signature:    first(md, valiss.HeaderSignature),
-		Context:      methodContext(fullMethod),
+		Context:      methodContext(fullMethod, nonce),
+		Nonce:        nonce,
 	}
 	if req.AccountToken == "" && req.UserToken == "" {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")

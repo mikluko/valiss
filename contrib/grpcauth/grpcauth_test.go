@@ -65,7 +65,7 @@ func authContext(req valiss.Request) context.Context {
 // will reconstruct and verify.
 func signed(t *testing.T, kp nkeys.KeyPair, at time.Time, method string, req valiss.Request) context.Context {
 	t.Helper()
-	ts, sig, err := valiss.SignRequest(kp, at, methodContext(method))
+	ts, sig, err := valiss.SignRequest(kp, at, methodContext(method, ""))
 	require.NoError(t, err)
 	req.Timestamp, req.Signature = ts, sig
 	return authContext(req)
@@ -272,7 +272,7 @@ func TestCredsEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	claims, err := valiss.VerifyAccount(md[valiss.HeaderAccountToken], opPub)
 	require.NoError(t, err)
-	assert.NoError(t, valiss.VerifySignature(claims.Subject, md[valiss.HeaderTimestamp], md[valiss.HeaderSignature], methodContext("/svc/M"), time.Now(), valiss.DefaultSkew))
+	assert.NoError(t, valiss.VerifySignature(claims.Subject, md[valiss.HeaderTimestamp], md[valiss.HeaderSignature], methodContext("/svc/M", ""), time.Now(), valiss.DefaultSkew))
 }
 
 // TestUserChain proves user-level creds authenticate through the

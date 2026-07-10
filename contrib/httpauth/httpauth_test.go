@@ -298,6 +298,50 @@ func TestMiddlewareRejections(t *testing.T) {
 	})
 }
 
+func TestReplaySuppression(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	_, tenantPub, seed := tenantKeys(t)
+	tok, err := valiss.Issue(op, "acme", tenantPub,
+		valiss.WithExtension(Ext{Paths: []string{"*"}}), valiss.WithTTL(time.Hour))
+	require.NoError(t, err)
+
+	mw := NewMiddleware(valiss.NewVerifier(opPub, valiss.AllowAll{}, valiss.WithReplayCache(valiss.NewMemoryReplayCache())))
+	srv := httptest.NewServer(mw(http.HandlerFunc(echoTenant)))
+	defer srv.Close()
+
+	t.Run("nonce-enabled client passes once, replay rejected", func(t *testing.T) {
+		var captured http.Header
+		transport, err := NewTransport(creds.Creds{AccountToken: tok, Seed: seed}, captureInto(&captured), WithNonce())
+		require.NoError(t, err)
+		req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/x", nil)
+		require.NoError(t, err)
+		_, _ = transport.RoundTrip(req)
+
+		send := func() int {
+			replay, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/x", nil)
+			require.NoError(t, err)
+			for _, h := range []string{valiss.HeaderAccountToken, valiss.HeaderTimestamp, valiss.HeaderSignature, valiss.HeaderNonce} {
+				replay.Header.Set(h, captured.Get(h))
+			}
+			resp, err := http.DefaultClient.Do(replay)
+			require.NoError(t, err)
+			resp.Body.Close()
+			return resp.StatusCode
+		}
+		assert.Equal(t, http.StatusOK, send(), "first presentation accepted")
+		assert.Equal(t, http.StatusUnauthorized, send(), "replay rejected")
+	})
+
+	t.Run("client without a nonce is rejected by a cache-enabled server", func(t *testing.T) {
+		resp, err := newClient(t, creds.Creds{AccountToken: tok, Seed: seed}).Get(srv.URL + "/v1/x")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+		assert.Contains(t, string(body), "nonce required")
+	})
+}
+
 // roundTripCapture is a base RoundTripper that records the outgoing request
 // headers instead of sending them, for replay tests.
 type roundTripCapture func(*http.Request) (*http.Response, error)

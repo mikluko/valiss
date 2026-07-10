@@ -120,6 +120,22 @@ whose tokens carry a malformed `acme.filters` claim, and
 `valiss.ExtValidator(func(req, id, acct, user QueryFilters) error { ... })`
 runs typed domain checks inside the verification pipeline.
 
+The per-request signature is bound to the transport's request context
+(HTTP method/host/path, gRPC full method), so a captured signature cannot
+authorize a different operation. To also suppress replay of the *same*
+operation within the skew window, enable a replay cache on the server and a
+nonce on the client:
+
+```go
+verifier := valiss.NewVerifier(operatorPub, allowlist,
+    valiss.WithReplayCache(valiss.NewMemoryReplayCache()))
+transport, _ := httpauth.NewTransport(c, nil, httpauth.WithNonce())
+// gRPC: grpcauth.NewCredentials(c, grpcauth.WithNonce())
+```
+
+`NewMemoryReplayCache` is process-local; for exactly-once across multiple
+server instances back `WithReplayCache` with shared storage keyed by nonce.
+
 Bearer credentials: a user token minted with `valiss.WithBearer()`
 authenticates without a per-request signature (token-only, replayable);
 pair with TLS and a short validity window. Accounts never get bearer tokens.

@@ -253,6 +253,54 @@ func TestValidityWindow(t *testing.T) {
 	})
 }
 
+func TestReplayCache(t *testing.T) {
+	op, opPub := issuerKeys(t)
+	account, accountPub := tenantKeys(t)
+	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	require.NoError(t, err)
+
+	signed := func(nonce string) Request {
+		ctx := []byte("op\n" + nonce)
+		ts, sig, err := SignRequest(account, time.Now(), ctx)
+		require.NoError(t, err)
+		return Request{AccountToken: acctTok, Timestamp: ts, Signature: sig, Context: ctx, Nonce: nonce}
+	}
+
+	t.Run("first use passes, replay rejected", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{}, WithReplayCache(NewMemoryReplayCache()))
+		req := signed(NewNonce())
+		_, err := v.VerifyRequest(req)
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(req)
+		assert.ErrorContains(t, err, "replay")
+	})
+
+	t.Run("distinct nonces both pass", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{}, WithReplayCache(NewMemoryReplayCache()))
+		_, err := v.VerifyRequest(signed(NewNonce()))
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(signed(NewNonce()))
+		assert.NoError(t, err)
+	})
+
+	t.Run("missing nonce rejected when a cache is configured", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{}, WithReplayCache(NewMemoryReplayCache()))
+		ts, sig, err := SignRequest(account, time.Now(), nil)
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(Request{AccountToken: acctTok, Timestamp: ts, Signature: sig})
+		assert.ErrorContains(t, err, "nonce required")
+	})
+
+	t.Run("no cache ignores nonces", func(t *testing.T) {
+		v := NewVerifier(opPub, AllowAll{})
+		req := signed(NewNonce())
+		_, err := v.VerifyRequest(req)
+		require.NoError(t, err)
+		_, err = v.VerifyRequest(req)
+		assert.NoError(t, err, "without a cache the same request replays freely")
+	})
+}
+
 func TestOperatorToken(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)
