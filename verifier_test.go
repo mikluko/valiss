@@ -317,10 +317,15 @@ func TestOperatorToken(t *testing.T) {
 		_, err = early.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
 		assert.ErrorContains(t, err, "operator token not yet valid")
 
+		longAcct, err := Issue(op, "acme", accountPub, WithEpoch(2), WithTTL(3*time.Hour))
+		require.NoError(t, err)
+		activeAt := time.Now().Add(2 * time.Hour)
+		lateTS, lateSig, err := SignRequest(account, activeAt)
+		require.NoError(t, err)
 		active := NewVerifier(opPub, AllowAll{}, WithOperatorToken(futureOp), WithSkew(0),
-			WithClock(func() time.Time { return time.Now().Add(2 * time.Hour) }))
-		_, err = active.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
-		assert.ErrorContains(t, err, "skew window", "past activation only the request signature is stale")
+			WithClock(func() time.Time { return activeAt }))
+		_, err = active.VerifyRequest(Request{AccountToken: longAcct, Timestamp: lateTS, Signature: lateSig})
+		assert.NoError(t, err, "domain opens once the operator token activates")
 	})
 
 	t.Run("foreign operator token poisons the verifier", func(t *testing.T) {
