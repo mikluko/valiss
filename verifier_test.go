@@ -310,6 +310,19 @@ func TestOperatorToken(t *testing.T) {
 		assert.ErrorContains(t, err, "trust domain is closed")
 	})
 
+	t.Run("operator token not yet valid closes the domain until activation", func(t *testing.T) {
+		futureOp, err := IssueOperator(op, WithEpoch(2), WithNotBefore(time.Now().Add(time.Hour)))
+		require.NoError(t, err)
+		early := NewVerifier(opPub, AllowAll{}, WithOperatorToken(futureOp), WithSkew(0))
+		_, err = early.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "operator token not yet valid")
+
+		active := NewVerifier(opPub, AllowAll{}, WithOperatorToken(futureOp), WithSkew(0),
+			WithClock(func() time.Time { return time.Now().Add(2 * time.Hour) }))
+		_, err = active.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
+		assert.ErrorContains(t, err, "skew window", "past activation only the request signature is stale")
+	})
+
 	t.Run("foreign operator token poisons the verifier", func(t *testing.T) {
 		other, _ := issuerKeys(t)
 		foreign, err := IssueOperator(other, WithEpoch(2))
