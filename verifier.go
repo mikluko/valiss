@@ -62,6 +62,12 @@ type Identity struct {
 	Account *AccountClaims
 	// User is the delegated end user; nil for account-level requests.
 	User *UserClaims
+	// Operator is the trust domain the request verified under: the keyring
+	// entry on a NewKeyringVerifier, the policy token under
+	// WithOperatorToken, nil otherwise. Consumers trusting several
+	// operators segment by Operator.Name — the keyring guarantees a name
+	// maps to exactly one operator key.
+	Operator *OperatorClaims
 }
 
 // ClaimsValidator is custom validation logic injected into the Verifier. It
@@ -142,6 +148,7 @@ func StaticAccountTokens(tokens ...string) (AccountTokenResolver, error) {
 // wrap it with header extraction and error mapping.
 type Verifier struct {
 	operatorPubKey string
+	keyring        *Keyring
 	allowlist      Allowlist
 	skew           time.Duration
 	now            func() time.Time
@@ -228,6 +235,35 @@ func NewVerifier(operatorPubKey string, allowlist Allowlist, opts ...VerifierOpt
 	return v
 }
 
+// NewKeyringVerifier is NewVerifier for a server trusting several
+// operators (see Keyring). The credential names its trust domain — the
+// account token's issuer and epoch select exactly one keyring entry — and
+// the request then verifies under that entry's always-enforced policy: the
+// entry token's validity window and its exact epoch, echoed by every chain
+// level. A credential from an unknown operator, or a known operator at an
+// unregistered epoch, is rejected. Handlers tell trust domains apart by
+// Identity.Operator.
+//
+// WithOperatorToken does not combine with a keyring: entries carry the
+// policy. The allowlist is shared across domains; account token jtis are
+// content hashes, so entries cannot collide between producers.
+func NewKeyringVerifier(keyring *Keyring, allowlist Allowlist, opts ...VerifierOption) *Verifier {
+	v := &Verifier{
+		keyring:   keyring,
+		allowlist: allowlist,
+		skew:      DefaultSkew,
+		now:       time.Now,
+	}
+	for _, opt := range opts {
+		opt(v)
+	}
+	if v.operator != nil || v.operatorErr != nil {
+		v.operator = nil
+		v.operatorErr = errors.New("valiss: operator token applies to single-anchor verification; keyring entries carry policy")
+	}
+	return v
+}
+
 // VerifyRequest authenticates a request credential and returns the verified
 // identity. Any error means the request must be rejected as unauthenticated.
 //
@@ -257,20 +293,41 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		}
 		req.AccountToken = tok
 	}
-	account, err := VerifyAccount(req.AccountToken, v.operatorPubKey)
-	if err != nil {
-		return nil, err
+	// Resolve the trust anchor: a keyring verifier selects the operator
+	// entry the credential names (issuer key + epoch, no trial); a
+	// single-anchor verifier checks against the pinned key and applies the
+	// WithOperatorToken policy when configured.
+	var account *AccountClaims
+	operator := v.operator
+	if v.keyring != nil {
+		issuer, err := IssuerOf(req.AccountToken)
+		if err != nil {
+			return nil, err
+		}
+		if account, err = VerifyAccount(req.AccountToken, issuer); err != nil {
+			return nil, err
+		}
+		entry, ok := v.keyring.lookup(issuer, account.Epoch)
+		if !ok {
+			return nil, fmt.Errorf("valiss: no trusted operator %s at epoch %d", issuer, account.Epoch)
+		}
+		operator = entry
+	} else {
+		var err error
+		if account, err = VerifyAccount(req.AccountToken, v.operatorPubKey); err != nil {
+			return nil, err
+		}
 	}
 	now := v.now()
-	if v.operator != nil {
-		if v.operator.Expired(now, v.skew) {
+	if operator != nil {
+		if operator.Expired(now, v.skew) {
 			return nil, errors.New("valiss: operator token expired: the trust domain is closed")
 		}
-		if v.operator.NotYetValid(now, v.skew) {
+		if operator.NotYetValid(now, v.skew) {
 			return nil, errors.New("valiss: operator token not yet valid")
 		}
-		if account.Epoch != v.operator.Epoch {
-			return nil, fmt.Errorf("valiss: account token epoch %d, trust domain epoch %d", account.Epoch, v.operator.Epoch)
+		if account.Epoch != operator.Epoch {
+			return nil, fmt.Errorf("valiss: account token epoch %d, trust domain epoch %d", account.Epoch, operator.Epoch)
 		}
 	}
 	if account.Expired(now, v.skew) {
@@ -282,14 +339,14 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 	if !v.allowlist.Allowed(account.ID) {
 		return nil, errors.New("valiss: account token not recognized")
 	}
-	id := &Identity{Account: account}
+	id := &Identity{Account: account, Operator: operator}
 	if req.UserToken != "" {
 		user, err := VerifyUser(req.UserToken, account.Subject)
 		if err != nil {
 			return nil, err
 		}
-		if v.operator != nil && user.Epoch != v.operator.Epoch {
-			return nil, fmt.Errorf("valiss: user token epoch %d, trust domain epoch %d", user.Epoch, v.operator.Epoch)
+		if operator != nil && user.Epoch != operator.Epoch {
+			return nil, fmt.Errorf("valiss: user token epoch %d, trust domain epoch %d", user.Epoch, operator.Epoch)
 		}
 		if user.Expired(now, v.skew) {
 			return nil, errors.New("valiss: user token expired")
