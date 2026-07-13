@@ -146,7 +146,7 @@ func TestVerifyMessageKeyring(t *testing.T) {
 		assert.NoError(t, err, "new-epoch chain accepted during grace")
 
 		// A short-lived old-epoch entry closes the grace window on its own.
-		bounded, err := IssueOperator(a.op, WithName("prod-us"), WithEpoch(4), WithTTL(time.Minute))
+		bounded, err := IssueOperator(a.op, WithName(a.name), WithEpoch(a.epoch), WithTTL(time.Minute))
 		require.NoError(t, err)
 		closing, err := NewKeyring(bounded, next.operatorToken)
 		require.NoError(t, err)
@@ -155,7 +155,7 @@ func TestVerifyMessageKeyring(t *testing.T) {
 	})
 
 	t.Run("entry window enforced at the instant", func(t *testing.T) {
-		bounded, err := IssueOperator(b.op, WithName("on-prem"), WithTTL(time.Minute))
+		bounded, err := IssueOperator(b.op, WithName(b.name), WithTTL(time.Minute))
 		require.NoError(t, err)
 		kb, err := NewKeyring(bounded)
 		require.NoError(t, err)
@@ -187,6 +187,7 @@ func TestVerifyMessageKeyring(t *testing.T) {
 type keyringFixture struct {
 	op, account, user       nkeys.KeyPair
 	opPub                   string
+	name                    string
 	epoch                   uint64
 	operatorToken           string
 	accountToken, userToken string
@@ -204,20 +205,20 @@ func newMessageChainAt(t *testing.T, name string, epoch uint64) keyringFixture {
 	userTok, err := IssueUser(account, userPub, WithName("alice"), WithEpoch(epoch), WithTTL(time.Hour))
 	require.NoError(t, err)
 	return keyringFixture{
-		op: op, account: account, user: user, opPub: opPub, epoch: epoch,
+		op: op, account: account, user: user, opPub: opPub, name: name, epoch: epoch,
 		operatorToken: opTok, accountToken: acctTok, userToken: userTok,
 	}
 }
 
 // reissueAt re-mints the fixture's operator token and chain at a new epoch,
-// keeping the same keys: a domain rotation.
+// keeping the same keys and names: a domain rotation.
 func (f keyringFixture) reissueAt(t *testing.T, epoch uint64) keyringFixture {
 	t.Helper()
 	accountPub, err := f.account.PublicKey()
 	require.NoError(t, err)
 	userPub, err := f.user.PublicKey()
 	require.NoError(t, err)
-	opTok, err := IssueOperator(f.op, WithName("prod-us"), WithEpoch(epoch))
+	opTok, err := IssueOperator(f.op, WithName(f.name), WithEpoch(epoch))
 	require.NoError(t, err)
 	acctTok, err := IssueAccount(f.op, accountPub, WithName("acme"), WithEpoch(epoch), WithTTL(time.Hour))
 	require.NoError(t, err)

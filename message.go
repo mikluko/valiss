@@ -230,7 +230,7 @@ func WithChainTokens(accountToken, userToken string) VerifyMessageOption {
 // A verified message token proves origin only. It is not a credential:
 // grant nothing for possession of one.
 func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*MessageClaims, error) {
-	return verifyMessage(token, opts, func(cfg *verifyMessageConfig, chainAccount string, at time.Time) (*AccountClaims, *OperatorClaims, error) {
+	return verifyMessage(token, opts, func(cfg *verifyMessageConfig, chainAccount string) (*AccountClaims, *OperatorClaims, error) {
 		account, err := VerifyAccount(chainAccount, operatorPubKey)
 		if err != nil {
 			return nil, nil, err
@@ -258,7 +258,7 @@ func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*
 // WithOperatorPolicy does not combine with a keyring: entries carry the
 // policy.
 func VerifyMessageKeyring(token string, keyring *Keyring, opts ...VerifyMessageOption) (*MessageClaims, error) {
-	return verifyMessage(token, opts, func(cfg *verifyMessageConfig, chainAccount string, at time.Time) (*AccountClaims, *OperatorClaims, error) {
+	return verifyMessage(token, opts, func(cfg *verifyMessageConfig, chainAccount string) (*AccountClaims, *OperatorClaims, error) {
 		if cfg.hasOperator {
 			return nil, nil, errors.New("valiss: operator policy applies to single-anchor verification; keyring entries carry policy")
 		}
@@ -280,8 +280,9 @@ func VerifyMessageKeyring(token string, keyring *Keyring, opts ...VerifyMessageO
 
 // verifyMessage is the shared verification core; anchor resolves and
 // trust-checks the chain's account token and returns the operator policy to
-// enforce (nil for none).
-func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *verifyMessageConfig, chainAccount string, at time.Time) (*AccountClaims, *OperatorClaims, error)) (*MessageClaims, error) {
+// enforce (nil for none). Window and epoch checks on whatever anchor
+// returns stay in the core, so anchors never need the instant.
+func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *verifyMessageConfig, chainAccount string) (*AccountClaims, *OperatorClaims, error)) (*MessageClaims, error) {
 	cfg := verifyMessageConfig{skew: DefaultSkew}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -312,7 +313,7 @@ func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *ve
 	if at.IsZero() {
 		at = time.Now()
 	}
-	account, operator, err := anchor(&cfg, chain.Account, at)
+	account, operator, err := anchor(&cfg, chain.Account)
 	if err != nil {
 		return nil, err
 	}
