@@ -136,7 +136,11 @@ grant nothing for possession of one.
 
 ## Verifying a request signature (httpauth/grpcauth)
 
-Per-request proof of possession, separate from tokens. The client sends a
+Per-request proof of possession, separate from tokens. This is the
+credential transports' mechanism (`contrib/httpauth`, `contrib/grpcauth`);
+the message-token transports (`contrib/httpsig`, `contrib/grpcsig`) carry
+no request signature — their binding lives inside the message token
+(audience and checksum, previous section). The client sends a
 timestamp (RFC 3339 with nanoseconds, UTC) and a signature
 (base64 **standard** encoding, unlike the token's base64url). The signed
 payload is:
