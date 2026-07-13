@@ -15,6 +15,12 @@ import (
 // short enough to bound capture exposure.
 const DefaultMessageTTL = 30 * time.Second
 
+// ErrNoChain reports a message token that neither embeds a provenance chain
+// nor had one supplied (WithChainTokens). Receiving transports match it
+// with errors.Is to drive chain negotiation: it is the one verification
+// failure a retransmit with the chain can cure.
+var ErrNoChain = errors.New("valiss: message token carries no chain and none was supplied (WithChainTokens)")
+
 // MessageClaims is the verified content of a message token: a per-message
 // proof of origin, together with the verified chain identities it was
 // checked against. A message token is a proof, not a credential: possession
@@ -235,7 +241,7 @@ func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*
 	chain := c.Valiss.Chain
 	switch {
 	case chain == nil && cfg.chain == nil:
-		return nil, errors.New("valiss: message token carries no chain and none was supplied (WithChainTokens)")
+		return nil, ErrNoChain
 	case chain == nil:
 		chain = cfg.chain
 	case cfg.chain != nil && (cfg.chain.Account != chain.Account || cfg.chain.User != chain.User):

@@ -138,7 +138,7 @@ func TestMiddlewareOperatorPolicy(t *testing.T) {
 	op, opPub, b := chainAt(t, 1)
 	bumped, err := valiss.IssueOperator(op, valiss.WithEpoch(2))
 	require.NoError(t, err)
-	mw := NewMiddleware(opPub, valiss.WithOperatorPolicy(bumped))
+	mw := NewMiddleware(opPub, WithVerifyOptions(valiss.WithOperatorPolicy(bumped)))
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
 	defer srv.Close()
 

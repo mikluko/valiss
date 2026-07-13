@@ -6,7 +6,9 @@ import (
 
 	"github.com/nats-io/nkeys"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	"github.com/mikluko/valiss"
 	"github.com/mikluko/valiss/creds"
@@ -19,6 +21,7 @@ type signer struct {
 	user         nkeys.KeyPair
 	epoch        uint64
 	ttl          time.Duration
+	negotiate    bool
 }
 
 // ClientOption configures UnaryClientInterceptor.
@@ -28,6 +31,15 @@ type ClientOption func(*signer)
 // message tokens.
 func WithTTL(d time.Duration) ClientOption {
 	return func(s *signer) { s.ttl = d }
+}
+
+// WithChainNegotiation sends chainless message tokens and retries the call
+// once with the chain in detached metadata when the server answers with the
+// valiss-chain: required trailer. Against a server holding a chain cache
+// the steady state is the bare token per call instead of the embedded
+// chain; without negotiation every token embeds the chain.
+func WithChainNegotiation() ClientOption {
+	return func(s *signer) { s.negotiate = true }
 }
 
 // UnaryClientInterceptor mints a fresh message token per unary call
@@ -57,17 +69,35 @@ func UnaryClientInterceptor(b creds.Creds, opts ...ClientOption) (grpc.UnaryClie
 		if err != nil {
 			return err
 		}
-		tok, err := valiss.IssueMessage(s.user,
+		mintOpts := []valiss.IssueOption{
 			valiss.WithAudience(method),
 			valiss.WithChecksum(valiss.Checksum(p)),
 			valiss.WithTTL(s.ttl),
 			valiss.WithEpoch(s.epoch),
-			valiss.WithChain(s.accountToken, s.userToken),
-		)
+		}
+		if !s.negotiate {
+			mintOpts = append(mintOpts, valiss.WithChain(s.accountToken, s.userToken))
+		}
+		tok, err := valiss.IssueMessage(s.user, mintOpts...)
 		if err != nil {
 			return err
 		}
-		ctx = metadata.AppendToOutgoingContext(ctx, valiss.HeaderMessageToken, tok)
-		return invoker(ctx, method, req, reply, cc, callOpts...)
+		signedCtx := metadata.AppendToOutgoingContext(ctx, valiss.HeaderMessageToken, tok)
+		if !s.negotiate {
+			return invoker(signedCtx, method, req, reply, cc, callOpts...)
+		}
+		var trailer metadata.MD
+		err = invoker(signedCtx, method, req, reply, cc, append(callOpts, grpc.Trailer(&trailer))...)
+		if status.Code(err) != codes.Unauthenticated || first(trailer, valiss.HeaderChain) != valiss.ChainRequired {
+			return err
+		}
+		// The server does not know our chain: retry once with the chain
+		// detached alongside the same still-valid token.
+		retryCtx := metadata.AppendToOutgoingContext(ctx,
+			valiss.HeaderMessageToken, tok,
+			valiss.HeaderChainAccountToken, s.accountToken,
+			valiss.HeaderChainUserToken, s.userToken,
+		)
+		return invoker(retryCtx, method, req, reply, cc, callOpts...)
 	}, nil
 }

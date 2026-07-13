@@ -26,6 +26,7 @@ type Transport struct {
 	user         nkeys.KeyPair
 	epoch        uint64
 	ttl          time.Duration
+	negotiate    bool
 }
 
 // TransportOption configures a Transport.
@@ -35,6 +36,17 @@ type TransportOption func(*Transport)
 // message tokens.
 func WithTTL(d time.Duration) TransportOption {
 	return func(t *Transport) { t.ttl = d }
+}
+
+// WithChainNegotiation sends chainless message tokens and retransmits once
+// with the chain in detached headers when the receiver answers
+// valiss-chain: required. Against a receiver holding a chain cache the
+// steady state is the bare token per message instead of the embedded
+// chain; without negotiation every token embeds the chain. Requests must
+// be replayable (a nil, bytes-backed, or GetBody-capable body — the
+// transport arranges this for bodies it can read).
+func WithChainNegotiation() TransportOption {
+	return func(t *Transport) { t.negotiate = true }
 }
 
 // NewTransport builds an emitting transport from parsed creds, which must
@@ -68,13 +80,16 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("valiss: message transport: read request body: %w", err)
 	}
-	tok, err := valiss.IssueMessage(t.user,
+	mintOpts := []valiss.IssueOption{
 		valiss.WithAudience(Audience(req)),
 		valiss.WithChecksum(valiss.Checksum(body)),
 		valiss.WithTTL(t.ttl),
 		valiss.WithEpoch(t.epoch),
-		valiss.WithChain(t.accountToken, t.userToken),
-	)
+	}
+	if !t.negotiate {
+		mintOpts = append(mintOpts, valiss.WithChain(t.accountToken, t.userToken))
+	}
+	tok, err := valiss.IssueMessage(t.user, mintOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +98,26 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	return base.RoundTrip(req)
+	resp, err := base.RoundTrip(req)
+	if err != nil || !t.negotiate {
+		return resp, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized || resp.Header.Get(valiss.HeaderChain) != valiss.ChainRequired {
+		return resp, nil
+	}
+	// The receiver does not know our chain: retransmit once with the chain
+	// detached alongside the same still-valid token.
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	retry := req.Clone(req.Context())
+	if req.GetBody != nil {
+		if retry.Body, err = req.GetBody(); err != nil {
+			return nil, fmt.Errorf("valiss: message transport: replay request body: %w", err)
+		}
+	}
+	retry.Header.Set(valiss.HeaderChainAccountToken, t.accountToken)
+	retry.Header.Set(valiss.HeaderChainUserToken, t.userToken)
+	return base.RoundTrip(retry)
 }
 
 var _ http.RoundTripper = (*Transport)(nil)
