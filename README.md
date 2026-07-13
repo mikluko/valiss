@@ -427,3 +427,10 @@ problems:
 - [SPIFFE/SPIRE](https://spiffe.io/) — workload identity with short-lived
   documents and trust-domain semantics; heavier machinery aimed at
   infrastructure identity rather than tenant credentials.
+
+## AI assistance
+
+Substantial parts of this library — code, tests, and documentation — were
+written with AI assistance ([Claude Code](https://claude.com/product/claude-code)).
+Design decisions, the security model, and review are human; treat the
+maintainer as the author accountable for every line.
