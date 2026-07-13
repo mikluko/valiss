@@ -14,7 +14,7 @@ go test ./...                       # full test suite
 go test . -run TestVerifyRequest    # single test in the root package (testify throughout)
 go vet ./...
 go run ./examples/minter keygen operator  # the example CLI
-go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpauth)
+go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpauth, ./examples/httpsig, ./examples/grpcsig)
 ```
 
 ## Architecture
@@ -38,7 +38,8 @@ Layout:
 
 - root — token issue/verify (`Issue`/`IssueUser`/`IssueMessage`, `VerifyAccount`/`VerifyUser`/`VerifyMessage`/`Decode`), `SignRequest`/`VerifySignature`, `Allowlist`, `Verifier`, extension plumbing, `IdentityFromContext`. `VerifyAccount`/`VerifyUser` deliberately do NOT check expiry or allowlist; `Verifier` layers those so callers get precise errors. `Decode` returns RFC-only `Claims` without establishing trust (tooling).
 - `creds` — client creds file (`Creds`: optional account token + optional user token + optional seed; at least one token), marker-delimited text. A *bundle* is user creds that also embed the account token; bearer creds have no seed.
-- `contrib/httpauth`, `contrib/grpcauth` — transport adapters over `valiss.Verifier`: header extraction, error mapping (401/403, Unauthenticated/PermissionDenied), extension enforcement, client-side attachment, all constructed from a `creds.Creds`. Wire headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`, `valiss-signature` (`valiss.Header*` constants). Each also carries the message-token pair (`valiss-message-token` header): httpauth `NewMessageTransport`/`NewMessageMiddleware` (audience = host + path, checksum over the body), grpcauth `MessageUnaryClientInterceptor`/`MessageUnaryServerInterceptor` (audience = full method, checksum over the deterministic protobuf encoding); emitters need bundle creds with the user seed, the epoch is derived from the chain tokens, and handlers read claims with `valiss.MessageFromContext`.
+- `contrib/httpauth`, `contrib/grpcauth` — transport adapters over `valiss.Verifier`: header extraction, error mapping (401/403, Unauthenticated/PermissionDenied), extension enforcement, client-side attachment, all constructed from a `creds.Creds`. Wire headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`, `valiss-signature` (`valiss.Header*` constants).
+- `contrib/httpsig`, `contrib/grpcsig` — message-token (proof-of-origin) adapters, carrying the token in the `valiss-message-token` header: httpsig `NewTransport`/`NewMiddleware` (audience = host + path, checksum over the body), grpcsig `UnaryClientInterceptor`/`UnaryServerInterceptor` (audience = full method, checksum over the deterministic protobuf encoding). Emitters need bundle creds with the user seed, the epoch is derived from the chain tokens (which must agree), and handlers read claims with `valiss.MessageFromContext`.
 - `examples/minter` — the manifest-driven minting tool (single-file, manifest types included), an example rather than a product. Deterministic manifest (`minter.yaml`): one operator, nested accounts/users by `name`, absolute RFC3339 `expires`/`not_before`, seeds only from `VALISS_SEED_<PUBKEY>` env vars. Creds → stdout, metadata (allowlist jti) → stderr; `-bundle` embeds a fresh account token.
 
 ## Conventions

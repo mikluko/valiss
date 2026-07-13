@@ -1,4 +1,4 @@
-package httpauth
+package httpsig
 
 import (
 	"bytes"
@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -15,27 +16,58 @@ import (
 	"github.com/mikluko/valiss/creds"
 )
 
-// messageBundle mints a full chain at epoch and returns emitter creds plus
-// the operator public key.
-func messageBundle(t *testing.T, epoch uint64) (creds.Creds, string) {
+// chainAt mints a full chain at epoch and returns the operator keypair, the
+// operator public key, and emitter bundle creds.
+func chainAt(t *testing.T, epoch uint64) (nkeys.KeyPair, string, creds.Creds) {
 	t.Helper()
-	op, opPub := issuerKeys(t)
-	account, accountPub, _ := tenantKeys(t)
-	_, userPub, userSeed := userKeys(t)
+	op, err := nkeys.CreateOperator()
+	require.NoError(t, err)
+	opPub, err := op.PublicKey()
+	require.NoError(t, err)
+	account, err := nkeys.CreateAccount()
+	require.NoError(t, err)
+	accountPub, err := account.PublicKey()
+	require.NoError(t, err)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userPub, err := user.PublicKey()
+	require.NoError(t, err)
+	userSeed, err := user.Seed()
+	require.NoError(t, err)
 	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	return creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}, opPub
+	return op, opPub, creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}
 }
 
-func TestMessageTransportMiddleware(t *testing.T) {
-	b, opPub := messageBundle(t, 1)
+func newTransport(t *testing.T, b creds.Creds, base http.RoundTripper) *Transport {
+	t.Helper()
+	tr, err := NewTransport(b, base)
+	require.NoError(t, err)
+	return tr
+}
+
+// captureToken is a base RoundTripper that records the minted message token
+// instead of sending the request, for replay tests.
+func captureToken(dst *string) http.RoundTripper {
+	return roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		*dst = r.Header.Get(valiss.HeaderMessageToken)
+		return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: http.Header{}}, nil
+	})
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestTransportMiddleware(t *testing.T) {
+	_, opPub, b := chainAt(t, 1)
 	payload := []byte(`{"event":"widget.created"}`)
 
 	var gotClaims *valiss.MessageClaims
 	var gotBody []byte
-	mw := NewMessageMiddleware(opPub)
+	mw := NewMiddleware(opPub)
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c, ok := valiss.MessageFromContext(r.Context())
 		require.True(t, ok)
@@ -46,9 +78,7 @@ func TestMessageTransportMiddleware(t *testing.T) {
 	})))
 	defer srv.Close()
 
-	transport, err := NewMessageTransport(b, nil)
-	require.NoError(t, err)
-	client := &http.Client{Transport: transport}
+	client := &http.Client{Transport: newTransport(t, b, nil)}
 
 	resp, err := client.Post(srv.URL+"/hook", "application/json", bytes.NewReader(payload))
 	require.NoError(t, err)
@@ -76,13 +106,13 @@ func TestMessageTransportMiddleware(t *testing.T) {
 	})
 
 	t.Run("tampered body rejected", func(t *testing.T) {
-		var hdr http.Header
-		capture := &http.Client{Transport: mustMessageTransport(t, b, captureInto(&hdr))}
+		var tok string
+		capture := &http.Client{Transport: newTransport(t, b, captureToken(&tok))}
 		_, err := capture.Post(srv.URL+"/hook", "application/json", bytes.NewReader(payload))
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodPost, srv.URL+"/hook", bytes.NewReader([]byte(`{"event":"widget.deleted"}`)))
 		require.NoError(t, err)
-		req.Header.Set(valiss.HeaderMessageToken, hdr.Get(valiss.HeaderMessageToken))
+		req.Header.Set(valiss.HeaderMessageToken, tok)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -90,13 +120,13 @@ func TestMessageTransportMiddleware(t *testing.T) {
 	})
 
 	t.Run("cross-destination replay rejected", func(t *testing.T) {
-		var hdr http.Header
-		capture := &http.Client{Transport: mustMessageTransport(t, b, captureInto(&hdr))}
+		var tok string
+		capture := &http.Client{Transport: newTransport(t, b, captureToken(&tok))}
 		_, err := capture.Post(srv.URL+"/hook", "application/json", bytes.NewReader(payload))
 		require.NoError(t, err)
 		req, err := http.NewRequest(http.MethodPost, srv.URL+"/other", bytes.NewReader(payload))
 		require.NoError(t, err)
-		req.Header.Set(valiss.HeaderMessageToken, hdr.Get(valiss.HeaderMessageToken))
+		req.Header.Set(valiss.HeaderMessageToken, tok)
 		resp, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)
 		defer resp.Body.Close()
@@ -104,31 +134,23 @@ func TestMessageTransportMiddleware(t *testing.T) {
 	})
 }
 
-func TestMessageMiddlewareOperatorPolicy(t *testing.T) {
-	op, opPub := issuerKeys(t)
-	account, accountPub, _ := tenantKeys(t)
-	_, userPub, userSeed := userKeys(t)
-	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
-	require.NoError(t, err)
-	userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
-	require.NoError(t, err)
-	b := creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}
-
+func TestMiddlewareOperatorPolicy(t *testing.T) {
+	op, opPub, b := chainAt(t, 1)
 	bumped, err := valiss.IssueOperator(op, valiss.WithEpoch(2))
 	require.NoError(t, err)
-	mw := NewMessageMiddleware(opPub, valiss.WithOperatorPolicy(bumped))
+	mw := NewMiddleware(opPub, valiss.WithOperatorPolicy(bumped))
 	srv := httptest.NewServer(mw(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
 	defer srv.Close()
 
-	client := &http.Client{Transport: mustMessageTransport(t, b, nil)}
+	client := &http.Client{Transport: newTransport(t, b, nil)}
 	resp, err := client.Post(srv.URL+"/hook", "application/json", bytes.NewReader([]byte("x")))
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode, "stale epoch rejected under operator policy")
 }
 
-func TestNewMessageTransportRejections(t *testing.T) {
-	b, _ := messageBundle(t, 0)
+func TestNewTransportRejections(t *testing.T) {
+	_, _, b := chainAt(t, 0)
 
 	t.Run("missing chain material rejected", func(t *testing.T) {
 		for _, broken := range []creds.Creds{
@@ -136,40 +158,42 @@ func TestNewMessageTransportRejections(t *testing.T) {
 			{AccountToken: b.AccountToken, Seed: b.Seed},
 			{AccountToken: b.AccountToken, UserToken: b.UserToken},
 		} {
-			_, err := NewMessageTransport(broken, nil)
+			_, err := NewTransport(broken, nil)
 			assert.ErrorContains(t, err, "requires bundle creds")
 		}
 	})
 
 	t.Run("chain epoch disagreement rejected", func(t *testing.T) {
-		op, _ := issuerKeys(t)
-		account, accountPub, _ := tenantKeys(t)
-		_, userPub, userSeed := userKeys(t)
+		op, err := nkeys.CreateOperator()
+		require.NoError(t, err)
+		account, err := nkeys.CreateAccount()
+		require.NoError(t, err)
+		accountPub, err := account.PublicKey()
+		require.NoError(t, err)
+		user, err := nkeys.CreateUser()
+		require.NoError(t, err)
+		userPub, err := user.PublicKey()
+		require.NoError(t, err)
+		userSeed, err := user.Seed()
+		require.NoError(t, err)
 		acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(2), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
-		_, err = NewMessageTransport(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}, nil)
+		_, err = NewTransport(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}, nil)
 		assert.ErrorContains(t, err, "chain epochs disagree")
 	})
 
-	t.Run("account seed rejected at first mint", func(t *testing.T) {
-		_, _, accountSeed := tenantKeys(t)
-		wrong := creds.Creds{AccountToken: b.AccountToken, UserToken: b.UserToken, Seed: accountSeed}
-		_, err := NewMessageTransport(wrong, nil)
-		require.NoError(t, err, "seed level is enforced by IssueMessage per request")
-		tr, err := NewMessageTransport(wrong, nil)
+	t.Run("non-user seed fails at mint", func(t *testing.T) {
+		account, err := nkeys.CreateAccount()
 		require.NoError(t, err)
+		accountSeed, err := account.Seed()
+		require.NoError(t, err)
+		tr, err := NewTransport(creds.Creds{AccountToken: b.AccountToken, UserToken: b.UserToken, Seed: accountSeed}, nil)
+		require.NoError(t, err, "seed level is enforced by IssueMessage per request")
 		req, err := http.NewRequest(http.MethodPost, "http://example.com/hook", bytes.NewReader([]byte("x")))
 		require.NoError(t, err)
 		_, err = tr.RoundTrip(req)
 		assert.ErrorContains(t, err, "user-type nkey")
 	})
-}
-
-func mustMessageTransport(t *testing.T, b creds.Creds, base http.RoundTripper) *MessageTransport {
-	t.Helper()
-	tr, err := NewMessageTransport(b, base)
-	require.NoError(t, err)
-	return tr
 }

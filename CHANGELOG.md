@@ -24,16 +24,16 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
   (verification as of a past instant, for stored messages). Message tokens
   are proofs, not credentials: the request `Verifier` never accepts them.
   (#9)
-- Message-token transports in contrib, both carrying the token in the new
-  `valiss-message-token` header and injecting verified claims via
-  `valiss.MessageFromContext` (with `valiss.ContextWithMessage` and
-  `valiss.DefaultMessageTTL` supporting them in the root package):
-  `httpauth.NewMessageTransport` / `httpauth.NewMessageMiddleware` bind
-  host + path and the request body; `grpcauth.MessageUnaryClientInterceptor`
-  / `grpcauth.MessageUnaryServerInterceptor` bind the full method and the
-  request message's deterministic protobuf encoding. Emitters take bundle
-  creds (account token, user token, user seed) and derive the epoch from the
-  chain. (#9)
+- Message-token transport packages `contrib/httpsig` and `contrib/grpcsig`,
+  both carrying the token in the new `valiss-message-token` header and
+  injecting verified claims via `valiss.MessageFromContext` (with
+  `valiss.ContextWithMessage` and `valiss.DefaultMessageTTL` supporting them
+  in the root package): `httpsig.NewTransport` / `httpsig.NewMiddleware`
+  bind host + path and the request body; `grpcsig.UnaryClientInterceptor` /
+  `grpcsig.UnaryServerInterceptor` bind the full method and the request
+  message's deterministic protobuf encoding. Emitters take bundle creds
+  (account token, user token, user seed) and derive the epoch from the
+  chain. Runnable demos: `examples/httpsig`, `examples/grpcsig`. (#9)
 
 ## [0.7.0] - 2026-07-10
 

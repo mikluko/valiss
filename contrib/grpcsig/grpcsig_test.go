@@ -1,10 +1,11 @@
-package grpcauth
+package grpcsig
 
 import (
 	"context"
 	"testing"
 	"time"
 
+	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -17,25 +18,36 @@ import (
 	"github.com/mikluko/valiss/creds"
 )
 
-// messageBundle mints a full chain at epoch and returns emitter creds plus
-// the operator public key.
-func messageBundle(t *testing.T, epoch uint64) (creds.Creds, string) {
+// chainAt mints a full chain at epoch and returns the operator keypair, the
+// operator public key, and emitter bundle creds.
+func chainAt(t *testing.T, epoch uint64) (nkeys.KeyPair, string, creds.Creds) {
 	t.Helper()
-	op, opPub := issuerKeys(t)
-	account, accountPub, _ := tenantKeys(t)
-	_, userPub, userSeed := userKeys(t)
+	op, err := nkeys.CreateOperator()
+	require.NoError(t, err)
+	opPub, err := op.PublicKey()
+	require.NoError(t, err)
+	account, err := nkeys.CreateAccount()
+	require.NoError(t, err)
+	accountPub, err := account.PublicKey()
+	require.NoError(t, err)
+	user, err := nkeys.CreateUser()
+	require.NoError(t, err)
+	userPub, err := user.PublicKey()
+	require.NoError(t, err)
+	userSeed, err := user.Seed()
+	require.NoError(t, err)
 	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	return creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}, opPub
+	return op, opPub, creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}
 }
 
 // mintedToken runs the client interceptor for a call and returns the message
 // token it attached to the outgoing metadata.
 func mintedToken(t *testing.T, b creds.Creds, method string, req any) string {
 	t.Helper()
-	ci, err := MessageUnaryClientInterceptor(b)
+	ci, err := UnaryClientInterceptor(b)
 	require.NoError(t, err)
 	var tok string
 	err = ci(context.Background(), method, req, nil, nil,
@@ -55,11 +67,15 @@ func incoming(tok string) context.Context {
 		metadata.New(map[string]string{valiss.HeaderMessageToken: tok}))
 }
 
-func TestMessageInterceptors(t *testing.T) {
-	b, opPub := messageBundle(t, 1)
+func unaryInfo(method string) *grpc.UnaryServerInfo {
+	return &grpc.UnaryServerInfo{FullMethod: method}
+}
+
+func TestInterceptors(t *testing.T) {
+	op, opPub, b := chainAt(t, 1)
 	req := wrapperspb.String("widget.created")
 	tok := mintedToken(t, b, "/svc/Emit", req)
-	si := MessageUnaryServerInterceptor(opPub)
+	si := UnaryServerInterceptor(opPub)
 
 	t.Run("end to end injects the claims", func(t *testing.T) {
 		var got *valiss.MessageClaims
@@ -105,27 +121,17 @@ func TestMessageInterceptors(t *testing.T) {
 	})
 
 	t.Run("operator policy enforced", func(t *testing.T) {
-		// Re-derive the operator keypair scenario: chain at epoch 1, domain
-		// bumped to 2.
-		op, opPub := issuerKeys(t)
-		account, accountPub, _ := tenantKeys(t)
-		_, userPub, userSeed := userKeys(t)
-		acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
-		require.NoError(t, err)
-		userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
-		require.NoError(t, err)
-		stale := mintedToken(t, creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}, "/svc/Emit", req)
 		bumped, err := valiss.IssueOperator(op, valiss.WithEpoch(2))
 		require.NoError(t, err)
-		strict := MessageUnaryServerInterceptor(opPub, valiss.WithOperatorPolicy(bumped))
-		_, err = strict(incoming(stale), req, unaryInfo("/svc/Emit"), handler)
+		strict := UnaryServerInterceptor(opPub, valiss.WithOperatorPolicy(bumped))
+		_, err = strict(incoming(tok), req, unaryInfo("/svc/Emit"), handler)
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 		assert.Contains(t, status.Convert(err).Message(), "trust domain epoch 2")
 	})
 }
 
-func TestMessageClientInterceptorRejections(t *testing.T) {
-	b, _ := messageBundle(t, 0)
+func TestClientInterceptorRejections(t *testing.T) {
+	_, _, b := chainAt(t, 0)
 
 	t.Run("missing chain material rejected", func(t *testing.T) {
 		for _, broken := range []creds.Creds{
@@ -133,13 +139,13 @@ func TestMessageClientInterceptorRejections(t *testing.T) {
 			{AccountToken: b.AccountToken, Seed: b.Seed},
 			{AccountToken: b.AccountToken, UserToken: b.UserToken},
 		} {
-			_, err := MessageUnaryClientInterceptor(broken)
+			_, err := UnaryClientInterceptor(broken)
 			assert.ErrorContains(t, err, "requires bundle creds")
 		}
 	})
 
 	t.Run("non-proto request fails the call", func(t *testing.T) {
-		ci, err := MessageUnaryClientInterceptor(b)
+		ci, err := UnaryClientInterceptor(b)
 		require.NoError(t, err)
 		err = ci(context.Background(), "/svc/Emit", "not a proto", nil, nil,
 			func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error { return nil })
