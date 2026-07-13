@@ -9,6 +9,27 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+### Added
+
+- Operator tokens can carry a human-readable trust-domain label, surfaced
+  as `OperatorClaims.Name` with the usual fallback to the public key.
+  Groundwork for multi-operator anchor sets (#13), where consumers tell
+  trust domains apart; names remain issuer-asserted, so uniqueness belongs
+  to whatever collection holds several entities side by side, not to
+  issuance.
+
+### Changed
+
+- **Breaking.** Names are optional at every level and ride the new
+  `WithName` option; the positional `name` parameters are gone:
+  `Issue(operator, name, tenantPubKey, ...)` becomes
+  `Issue(operator, tenantPubKey, valiss.WithName(name), ...)` and
+  `IssueUser(account, name, userPubKey, ...)` becomes
+  `IssueUser(account, userPubKey, valiss.WithName(name), ...)`. An entity
+  minted without `WithName` is represented by its public key, as before.
+  `IssueMessage` rejects `WithName` (messages are events, not entities).
+  (#13)
+
 ## [0.9.0] - 2026-07-13
 
 ### Added

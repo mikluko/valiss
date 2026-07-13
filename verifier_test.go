@@ -14,11 +14,11 @@ func TestVerifyRequestBearer(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
-	bearerTok, err := IssueUser(account, "carol", userPub, WithBearer(), WithTTL(time.Hour))
+	bearerTok, err := IssueUser(account, userPub, WithName("carol"), WithBearer(), WithTTL(time.Hour))
 	require.NoError(t, err)
-	plainTok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
+	plainTok, err := IssueUser(account, userPub, WithName("alice"), WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{})
@@ -65,13 +65,13 @@ func TestClaimsValidator(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
 	acctTS, acctSig, err := SignRequest(account, time.Now(), nil)
 	require.NoError(t, err)
 
 	t.Run("validator sees the assembled identity", func(t *testing.T) {
-		userTok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
+		userTok, err := IssueUser(account, userPub, WithName("alice"), WithTTL(time.Hour))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(user, time.Now(), nil)
 		require.NoError(t, err)
@@ -137,9 +137,9 @@ func TestClaimsValidator(t *testing.T) {
 	})
 
 	t.Run("typed extension validator", func(t *testing.T) {
-		extTok, err := Issue(op, "acme", accountPub, WithExtension(domainClaims{Plan: "pro"}))
+		extTok, err := Issue(op, accountPub, WithName("acme"), WithExtension(domainClaims{Plan: "pro"}))
 		require.NoError(t, err)
-		extUserTok, err := IssueUser(account, "alice", userPub, WithExtension(domainClaims{Plan: "basic"}))
+		extUserTok, err := IssueUser(account, userPub, WithName("alice"), WithExtension(domainClaims{Plan: "basic"}))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(user, time.Now(), nil)
 		require.NoError(t, err)
@@ -169,7 +169,7 @@ func TestExtensionTypeRegistration(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 
 	t.Run("well-formed extension passes", func(t *testing.T) {
-		tok, err := Issue(op, "acme", accountPub, WithExtension(domainClaims{Plan: "pro"}))
+		tok, err := Issue(op, accountPub, WithName("acme"), WithExtension(domainClaims{Plan: "pro"}))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestExtensionTypeRegistration(t *testing.T) {
 	t.Run("malformed extension rejected at auth time", func(t *testing.T) {
 		// Mint the payload as a string under the same name; decoding it into
 		// the registered struct type must fail.
-		tok, err := Issue(op, "acme", accountPub, WithExtension(stringExt("not-a-struct")))
+		tok, err := Issue(op, accountPub, WithName("acme"), WithExtension(stringExt("not-a-struct")))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
@@ -191,7 +191,7 @@ func TestExtensionTypeRegistration(t *testing.T) {
 	})
 
 	t.Run("absent extension is not required", func(t *testing.T) {
-		tok, err := Issue(op, "acme", accountPub)
+		tok, err := Issue(op, accountPub, WithName("acme"))
 		require.NoError(t, err)
 		ts, sig, err := SignRequest(account, time.Now(), nil)
 		require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestValidityWindow(t *testing.T) {
 	tenant, tenantPub := tenantKeys(t)
 
 	t.Run("token without expiry never expires", func(t *testing.T) {
-		tok, err := Issue(op, "acme", tenantPub)
+		tok, err := Issue(op, tenantPub, WithName("acme"))
 		require.NoError(t, err)
 		claims, err := VerifyAccount(tok, opPub)
 		require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestValidityWindow(t *testing.T) {
 
 	t.Run("not-before gates the token", func(t *testing.T) {
 		start := time.Now().Add(time.Hour)
-		tok, err := Issue(op, "acme", tenantPub, WithTTL(2*time.Hour), WithNotBefore(start))
+		tok, err := Issue(op, tenantPub, WithName("acme"), WithTTL(2*time.Hour), WithNotBefore(start))
 		require.NoError(t, err)
 
 		now := time.Now()
@@ -243,9 +243,9 @@ func TestValidityWindow(t *testing.T) {
 	t.Run("user token not-before gates the chain", func(t *testing.T) {
 		account, accountPub := tenantKeys(t)
 		_, userPub := userKeys(t)
-		acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+		acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 		require.NoError(t, err)
-		userTok, err := IssueUser(account, "carol", userPub, WithBearer(), WithNotBefore(time.Now().Add(time.Hour)))
+		userTok, err := IssueUser(account, userPub, WithName("carol"), WithBearer(), WithNotBefore(time.Now().Add(time.Hour)))
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithSkew(0))
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: userTok})
@@ -256,7 +256,7 @@ func TestValidityWindow(t *testing.T) {
 func TestReplayCache(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)
-	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	signed := func(nonce string) Request {
@@ -308,9 +308,9 @@ func TestOperatorToken(t *testing.T) {
 
 	opTok, err := IssueOperator(op, WithEpoch(2))
 	require.NoError(t, err)
-	acctTok, err := Issue(op, "acme", accountPub, WithEpoch(2), WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithEpoch(2), WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, WithEpoch(2), WithTTL(time.Hour))
+	userTok, err := IssueUser(account, userPub, WithName("alice"), WithEpoch(2), WithTTL(time.Hour))
 	require.NoError(t, err)
 	ts, sig, err := SignRequest(user, time.Now(), nil)
 	require.NoError(t, err)
@@ -325,28 +325,28 @@ func TestOperatorToken(t *testing.T) {
 	})
 
 	t.Run("stale account token rejected", func(t *testing.T) {
-		old, err := Issue(op, "acme", accountPub, WithEpoch(1), WithTTL(time.Hour))
+		old, err := Issue(op, accountPub, WithName("acme"), WithEpoch(1), WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: old, Timestamp: acctTS, Signature: acctSig})
 		assert.ErrorContains(t, err, "epoch 1, trust domain epoch 2")
 	})
 
 	t.Run("unstamped account token rejected", func(t *testing.T) {
-		unstamped, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+		unstamped, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: unstamped, Timestamp: acctTS, Signature: acctSig})
 		assert.ErrorContains(t, err, "epoch 0, trust domain epoch 2")
 	})
 
 	t.Run("stale user token rejected even under a current account", func(t *testing.T) {
-		oldUser, err := IssueUser(account, "alice", userPub, WithEpoch(1), WithTTL(time.Hour))
+		oldUser, err := IssueUser(account, userPub, WithName("alice"), WithEpoch(1), WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: oldUser, Timestamp: ts, Signature: sig})
 		assert.ErrorContains(t, err, "user token epoch 1")
 	})
 
 	t.Run("resolved account token is subject to the epoch too", func(t *testing.T) {
-		old, err := Issue(op, "acme", accountPub, WithEpoch(1), WithTTL(time.Hour))
+		old, err := Issue(op, accountPub, WithName("acme"), WithEpoch(1), WithTTL(time.Hour))
 		require.NoError(t, err)
 		resolver, err := StaticAccountTokens(old)
 		require.NoError(t, err)
@@ -357,7 +357,7 @@ func TestOperatorToken(t *testing.T) {
 
 	t.Run("without an operator token epochs are ignored", func(t *testing.T) {
 		lax := NewVerifier(opPub, AllowAll{})
-		old, err := Issue(op, "acme", accountPub, WithEpoch(1), WithTTL(time.Hour))
+		old, err := Issue(op, accountPub, WithName("acme"), WithEpoch(1), WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = lax.VerifyRequest(Request{AccountToken: old, Timestamp: acctTS, Signature: acctSig})
 		assert.NoError(t, err)
@@ -379,7 +379,7 @@ func TestOperatorToken(t *testing.T) {
 		_, err = early.VerifyRequest(Request{AccountToken: acctTok, Timestamp: acctTS, Signature: acctSig})
 		assert.ErrorContains(t, err, "operator token not yet valid")
 
-		longAcct, err := Issue(op, "acme", accountPub, WithEpoch(2), WithTTL(3*time.Hour))
+		longAcct, err := Issue(op, accountPub, WithName("acme"), WithEpoch(2), WithTTL(3*time.Hour))
 		require.NoError(t, err)
 		activeAt := time.Now().Add(2 * time.Hour)
 		lateTS, lateSig, err := SignRequest(account, activeAt, nil)
@@ -409,14 +409,23 @@ func TestOperatorToken(t *testing.T) {
 func TestIssueOperator(t *testing.T) {
 	op, opPub := issuerKeys(t)
 
-	tok, err := IssueOperator(op, WithEpoch(7), WithTTL(time.Hour))
+	tok, err := IssueOperator(op, WithName("prod-us"), WithEpoch(7), WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := VerifyOperator(tok, opPub)
 	require.NoError(t, err)
 	assert.Equal(t, opPub, claims.Subject)
 	assert.Equal(t, opPub, claims.Issuer)
+	assert.Equal(t, "prod-us", claims.Name)
 	assert.Equal(t, uint64(7), claims.Epoch)
 	assert.False(t, claims.ExpiresAt.IsZero())
+
+	t.Run("name falls back to the operator key", func(t *testing.T) {
+		unnamed, err := IssueOperator(op)
+		require.NoError(t, err)
+		c, err := VerifyOperator(unnamed, opPub)
+		require.NoError(t, err)
+		assert.Equal(t, opPub, c.Name)
+	})
 
 	t.Run("non-operator signer rejected", func(t *testing.T) {
 		account, _ := tenantKeys(t)
@@ -446,9 +455,9 @@ func TestAccountTokenResolver(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
+	userTok, err := IssueUser(account, userPub, WithName("alice"), WithTTL(time.Hour))
 	require.NoError(t, err)
 	ts, sig, err := SignRequest(user, time.Now(), nil)
 	require.NoError(t, err)
@@ -473,7 +482,7 @@ func TestAccountTokenResolver(t *testing.T) {
 
 	t.Run("unknown account rejected", func(t *testing.T) {
 		other, _ := tenantKeys(t)
-		foreignUserTok, err := IssueUser(other, "mallory", userPub, WithTTL(time.Hour))
+		foreignUserTok, err := IssueUser(other, userPub, WithName("mallory"), WithTTL(time.Hour))
 		require.NoError(t, err)
 		v := NewVerifier(opPub, AllowAll{}, WithAccountTokenResolver(resolver))
 		_, err = v.VerifyRequest(Request{UserToken: foreignUserTok, Timestamp: ts, Signature: sig})
@@ -504,9 +513,9 @@ func TestVerifyRequestChain(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
+	userTok, err := IssueUser(account, userPub, WithName("alice"), WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	v := NewVerifier(opPub, AllowAll{})
@@ -532,14 +541,14 @@ func TestVerifyRequestChain(t *testing.T) {
 
 	t.Run("user token signed by a foreign account rejected", func(t *testing.T) {
 		other, _ := tenantKeys(t)
-		foreign, err := IssueUser(other, "alice", userPub, WithTTL(time.Hour))
+		foreign, err := IssueUser(other, userPub, WithName("alice"), WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = v.VerifyRequest(Request{AccountToken: acctTok, UserToken: foreign, Timestamp: ts, Signature: sig})
 		assert.ErrorContains(t, err, "expected account")
 	})
 
 	t.Run("expired user token rejected", func(t *testing.T) {
-		short, err := IssueUser(account, "alice", userPub, WithTTL(time.Second))
+		short, err := IssueUser(account, userPub, WithName("alice"), WithTTL(time.Second))
 		require.NoError(t, err)
 		late := NewVerifier(opPub, AllowAll{}, WithClock(func() time.Time { return time.Now().Add(10 * time.Minute) }), WithSkew(0))
 		_, err = late.VerifyRequest(Request{AccountToken: acctTok, UserToken: short})

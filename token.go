@@ -67,6 +67,11 @@ type Claims struct {
 // the trust domain's policy statement, signed by the pinned anchor key.
 type OperatorClaims struct {
 	Claims
+	// Name is the trust domain's human-readable label. It is asserted by
+	// the operator about itself: a consumer trusting several operators must
+	// not assume names are unique across domains. Falls back to the
+	// operator public key when the token carries no name.
+	Name string
 	// Epoch is the trust domain's current epoch. A verifier configured with
 	// the operator token accepts only account and user tokens that echo it.
 	Epoch uint64
@@ -109,6 +114,7 @@ type Extension interface {
 
 // issueConfig collects IssueOption effects.
 type issueConfig struct {
+	name      string
 	expires   int64
 	notBefore int64
 	epoch     uint64
@@ -123,6 +129,17 @@ type issueConfig struct {
 // IssueOption customizes a minted token. Without a WithTTL or WithExpiry
 // option the token never expires.
 type IssueOption func(*issueConfig)
+
+// WithName labels the minted entity with a human-readable name: the trust
+// domain on an operator token, the tenant on an account token, the user on
+// a user token. Names are optional; an unnamed entity is represented by its
+// public key. Names are asserted by their issuer, and nothing at issuance
+// checks uniqueness: collections that hold several entities side by side
+// (an anchor keyring, a tenant directory) own the uniqueness of names in
+// their scope. Message tokens carry no name.
+func WithName(name string) IssueOption {
+	return func(c *issueConfig) { c.name = name }
+}
 
 // WithTTL makes the token expire ttl from now (the JWT exp claim).
 func WithTTL(ttl time.Duration) IssueOption {
@@ -226,9 +243,10 @@ func (c *issueConfig) rejectMessageOptions() error {
 
 // IssueOperator mints the self-signed operator token: the trust domain's
 // policy statement (epoch, validity window, extensions), signed by the
-// operator key over its own public key. Servers configured with it via
-// WithOperatorToken enforce the policy on every request; the pinned public
-// key remains the trust anchor.
+// operator key over its own public key. WithName labels the trust domain
+// the way account and user names label theirs. Servers configured with the
+// token via WithOperatorToken enforce the policy on every request; the
+// pinned public key remains the trust anchor.
 func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) {
 	pub, err := operator.PublicKey()
 	if err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
@@ -248,6 +266,7 @@ func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) 
 		return "", err
 	}
 	return encodeToken(operator, &wire[operatorBody]{
+		Name:      cfg.name,
 		Subject:   pub,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
@@ -256,9 +275,10 @@ func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) 
 }
 
 // Issue mints an account token signed by the operator key. The token
-// subject is the tenant's account public key and name carries the tenant
-// id; the tenant signs requests with the seed matching the subject key.
-func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOption) (string, error) {
+// subject is the tenant's account public key and WithName carries the
+// tenant id; the tenant signs requests with the seed matching the subject
+// key.
+func Issue(operator nkeys.KeyPair, tenantPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
 		return "", errors.New("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
@@ -279,7 +299,7 @@ func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOptio
 		return "", err
 	}
 	return encodeToken(operator, &wire[accountBody]{
-		Name:      name,
+		Name:      cfg.name,
 		Subject:   tenantPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
@@ -288,10 +308,10 @@ func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOptio
 }
 
 // IssueUser mints a user token signed by a tenant's account key, delegating
-// to an end user. The token subject is the user's public key and name
+// to an end user. The token subject is the user's public key and WithName
 // carries the user id. WithBearer produces a token the server accepts
 // without per-request signatures.
-func IssueUser(account nkeys.KeyPair, name, userPubKey string, opts ...IssueOption) (string, error) {
+func IssueUser(account nkeys.KeyPair, userPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := account.PublicKey(); err != nil || !nkeys.IsValidPublicAccountKey(pub) {
 		return "", errors.New("valiss: user tokens must be signed by an account-type nkey (expected an SA... seed)")
 	}
@@ -309,7 +329,7 @@ func IssueUser(account nkeys.KeyPair, name, userPubKey string, opts ...IssueOpti
 		return "", err
 	}
 	return encodeToken(account, &wire[userBody]{
-		Name:      name,
+		Name:      cfg.name,
 		Subject:   userPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
@@ -336,6 +356,7 @@ func VerifyOperator(token, operatorPubKey string) (*OperatorClaims, error) {
 	}
 	return &OperatorClaims{
 		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
+		Name:   nameOf(c.Name, c.Subject),
 		Epoch:  c.Valiss.Epoch,
 		Ext:    c.Valiss.Ext,
 	}, nil

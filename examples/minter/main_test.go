@@ -180,7 +180,7 @@ func TestCredsUser(t *testing.T) {
 	assert.Equal(t, user.ID, meta.User.JTI)
 
 	// A server with the account token in static configuration accepts it.
-	acctTok, err := valiss.Issue(mustKey(t, f.opSeed), "acme", f.acctPub, valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(mustKey(t, f.opSeed), f.acctPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	acct, err := valiss.VerifyAccount(acctTok, f.opPub)
 	require.NoError(t, err)

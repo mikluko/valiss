@@ -40,10 +40,10 @@ func main() {
 	userSeed, err := user.Seed()
 	check(err)
 
-	accountToken, err := valiss.Issue(operator, "acme", accountPub,
+	accountToken, err := valiss.Issue(operator, accountPub, valiss.WithName("acme"),
 		valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	check(err)
-	userToken, err := valiss.IssueUser(account, "webhook-emitter", userPub,
+	userToken, err := valiss.IssueUser(account, userPub, valiss.WithName("webhook-emitter"),
 		valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	check(err)
 

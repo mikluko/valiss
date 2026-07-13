@@ -220,7 +220,7 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct Account) error
 		return err
 	}
 	tok, meta, err := mintToken(func() (string, error) {
-		return valiss.Issue(operator, acct.Name, pub, validity(acct.Expires, acct.NotBefore)...)
+		return valiss.Issue(operator, pub, append([]valiss.IssueOption{valiss.WithName(acct.Name)}, validity(acct.Expires, acct.NotBefore)...)...)
 	}, acct.Name, pub, generated)
 	if err != nil {
 		return err
@@ -262,7 +262,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName
 	)
 	if operator != nil {
 		tok, meta, err := mintToken(func() (string, error) {
-			return valiss.Issue(operator, acct.Name, acct.Key, validity(acct.Expires, acct.NotBefore)...)
+			return valiss.Issue(operator, acct.Key, append([]valiss.IssueOption{valiss.WithName(acct.Name)}, validity(acct.Expires, acct.NotBefore)...)...)
 		}, acct.Name, acct.Key, false)
 		if err != nil {
 			return err
@@ -278,7 +278,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName
 	if err != nil {
 		return err
 	}
-	opts := validity(user.Expires, user.NotBefore)
+	opts := append([]valiss.IssueOption{valiss.WithName(user.Name)}, validity(user.Expires, user.NotBefore)...)
 	if user.Bearer {
 		// Bearer creds carry no seed: for a generated pair the seed is
 		// discarded, making the token the sole credential.
@@ -289,7 +289,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName
 		}
 	}
 	userTok, userMeta, err := mintToken(func() (string, error) {
-		return valiss.IssueUser(account, user.Name, userPub, opts...)
+		return valiss.IssueUser(account, userPub, opts...)
 	}, user.Name, userPub, generated)
 	if err != nil {
 		return err

@@ -38,9 +38,12 @@ it, and an account can never grant more than it holds.
 
 Key types map to nkeys directly: operator `SO...`/`O...`, account
 `SA...`/`A...`, user `SU...`/`U...`. Tokens are valiss's own typed claims in
-an nkey-signed JWT: `sub` is the subject's public key, `name` the
-human-readable label, validity via optional absolute `exp`/`nbf` (absent
-`exp` = never expires).
+an nkey-signed JWT: `sub` is the subject's public key, `name` an optional
+human-readable label (`WithName`; an unnamed entity is represented by its
+public key), validity via optional absolute `exp`/`nbf` (absent `exp` =
+never expires). Names are issuer-asserted and nowhere checked for
+uniqueness at issuance: collections holding several entities side by side
+own the uniqueness of names in their scope.
 
 ## Rotation and mass revocation
 
@@ -50,8 +53,8 @@ optional validity window. Verifiers configured with it accept only account
 and user tokens stamped with the current epoch:
 
 ```go
-opTok, _ := valiss.IssueOperator(operator, valiss.WithEpoch(3))
-acct, _  := valiss.Issue(operator, "acme", acctPub, valiss.WithEpoch(3), ...)
+opTok, _ := valiss.IssueOperator(operator, valiss.WithName("prod-us"), valiss.WithEpoch(3))
+acct, _  := valiss.Issue(operator, acctPub, valiss.WithName("acme"), valiss.WithEpoch(3), ...)
 
 verifier := valiss.NewVerifier(operatorPub, allowlist,
     valiss.WithOperatorToken(opTok))
@@ -215,7 +218,8 @@ type QueryFilters struct {
 func (QueryFilters) ExtensionName() string { return "acme.filters" }
 
 // Mint: transport bounds plus domain claims, typed end to end.
-tok, _ := valiss.IssueUser(account, "alice", alicePub,
+tok, _ := valiss.IssueUser(account, alicePub,
+    valiss.WithName("alice"),
     valiss.WithExtension(grpcauth.Ext{Methods: []string{"/example.v1.Widgets/*"}}),
     valiss.WithExtension(QueryFilters{Regions: []string{"eu"}}),
     valiss.WithTTL(time.Hour),

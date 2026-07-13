@@ -41,7 +41,7 @@ func TestIssueVerify(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub := tenantKeys(t)
 
-	token, err := Issue(op, "acme", tenantPub, WithTTL(time.Hour))
+	token, err := Issue(op, tenantPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	claims, err := VerifyAccount(token, opPub)
@@ -66,12 +66,12 @@ func TestIssueVerify(t *testing.T) {
 
 	t.Run("non-operator-type signer rejected", func(t *testing.T) {
 		account, _ := tenantKeys(t)
-		_, err := Issue(account, "acme", tenantPub, WithTTL(time.Hour))
+		_, err := Issue(account, tenantPub, WithName("acme"), WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "operator-type nkey")
 	})
 
 	t.Run("expired", func(t *testing.T) {
-		short, err := Issue(op, "acme", tenantPub, WithTTL(time.Second))
+		short, err := Issue(op, tenantPub, WithName("acme"), WithTTL(time.Second))
 		require.NoError(t, err)
 		c, err := VerifyAccount(short, opPub)
 		require.NoError(t, err)
@@ -84,12 +84,12 @@ func TestIssueVerify(t *testing.T) {
 	})
 
 	t.Run("bearer option rejected", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, WithBearer())
+		_, err := Issue(op, tenantPub, WithName("acme"), WithBearer())
 		assert.ErrorContains(t, err, "bearer applies only to user tokens")
 	})
 
 	t.Run("name falls back to the subject key", func(t *testing.T) {
-		unnamed, err := Issue(op, "", tenantPub)
+		unnamed, err := Issue(op, tenantPub)
 		require.NoError(t, err)
 		c, err := VerifyAccount(unnamed, opPub)
 		require.NoError(t, err)
@@ -101,7 +101,7 @@ func TestIssueUser(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	_, userPub := userKeys(t)
 
-	tok, err := IssueUser(account, "alice", userPub, WithTTL(time.Hour))
+	tok, err := IssueUser(account, userPub, WithName("alice"), WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := VerifyUser(tok, accountPub)
 	require.NoError(t, err)
@@ -111,17 +111,17 @@ func TestIssueUser(t *testing.T) {
 
 	t.Run("non-account-type signer rejected", func(t *testing.T) {
 		op, _ := issuerKeys(t)
-		_, err := IssueUser(op, "alice", userPub, WithTTL(time.Hour))
+		_, err := IssueUser(op, userPub, WithName("alice"), WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "account-type nkey")
 	})
 
 	t.Run("keyless rejected", func(t *testing.T) {
-		_, err := IssueUser(account, "carol", "", WithTTL(time.Hour))
+		_, err := IssueUser(account, "", WithName("carol"), WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "invalid user public key")
 	})
 
 	t.Run("bearer flag round-trips", func(t *testing.T) {
-		tok, err := IssueUser(account, "carol", userPub, WithBearer(), WithTTL(time.Hour))
+		tok, err := IssueUser(account, userPub, WithName("carol"), WithBearer(), WithTTL(time.Hour))
 		require.NoError(t, err)
 		claims, err := VerifyUser(tok, accountPub)
 		require.NoError(t, err)
@@ -135,7 +135,7 @@ func TestIssueUser(t *testing.T) {
 
 	t.Run("account key rejected as user key", func(t *testing.T) {
 		_, otherAcctPub := tenantKeys(t)
-		_, err := IssueUser(account, "alice", otherAcctPub, WithTTL(time.Hour))
+		_, err := IssueUser(account, otherAcctPub, WithName("alice"), WithTTL(time.Hour))
 		assert.ErrorContains(t, err, "invalid user public key")
 	})
 }
@@ -169,7 +169,8 @@ func TestExtension(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub := tenantKeys(t)
 
-	tok, err := Issue(op, "acme", tenantPub,
+	tok, err := Issue(op, tenantPub,
+		WithName("acme"),
 		WithExtension(domainClaims{Plan: "pro", Quota: 42}),
 		WithExtension(otherExt{K: "v"}),
 	)
@@ -188,7 +189,7 @@ func TestExtension(t *testing.T) {
 	assert.Equal(t, otherExt{K: "v"}, other)
 
 	t.Run("absent extension decodes to zero value", func(t *testing.T) {
-		plain, err := Issue(op, "acme", tenantPub)
+		plain, err := Issue(op, tenantPub, WithName("acme"))
 		require.NoError(t, err)
 		claims, err := VerifyAccount(plain, opPub)
 		require.NoError(t, err)
@@ -199,13 +200,13 @@ func TestExtension(t *testing.T) {
 	})
 
 	t.Run("duplicate extension name rejected", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub,
+		_, err := Issue(op, tenantPub, WithName("acme"),
 			WithExtension(domainClaims{}), WithExtension(clashingExt{}))
 		assert.ErrorContains(t, err, `duplicate extension "acme.example"`)
 	})
 
 	t.Run("empty extension name rejected", func(t *testing.T) {
-		_, err := Issue(op, "acme", tenantPub, WithExtension(unnamedExt{}))
+		_, err := Issue(op, tenantPub, WithName("acme"), WithExtension(unnamedExt{}))
 		assert.ErrorContains(t, err, "name must not be empty")
 	})
 }
@@ -215,9 +216,9 @@ func TestDecode(t *testing.T) {
 	account, accountPub := tenantKeys(t)
 	_, userPub := userKeys(t)
 
-	acctTok, err := Issue(op, "acme", accountPub, WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, WithBearer())
+	userTok, err := IssueUser(account, userPub, WithName("alice"), WithBearer())
 	require.NoError(t, err)
 
 	acct, err := Decode(acctTok)

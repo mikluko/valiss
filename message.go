@@ -88,6 +88,9 @@ func IssueMessage(user nkeys.KeyPair, opts ...IssueOption) (string, error) {
 	if cfg.bearer {
 		return "", errors.New("valiss: bearer applies only to user tokens")
 	}
+	if cfg.name != "" {
+		return "", errors.New("valiss: name applies only to operator, account, and user tokens")
+	}
 	if cfg.expires == 0 {
 		return "", errors.New("valiss: message tokens must carry an expiry (WithTTL or WithExpiry)")
 	}
