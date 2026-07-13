@@ -54,7 +54,7 @@ and user tokens stamped with the current epoch:
 
 ```go
 opTok, _ := valiss.IssueOperator(operator, valiss.WithName("prod-us"), valiss.WithEpoch(3))
-acct, _  := valiss.Issue(operator, acctPub, valiss.WithName("acme"), valiss.WithEpoch(3), ...)
+acct, _  := valiss.IssueAccount(operator, acctPub, valiss.WithName("acme"), valiss.WithEpoch(3), ...)
 
 verifier := valiss.NewVerifier(operatorPub, allowlist,
     valiss.WithOperatorToken(opTok))

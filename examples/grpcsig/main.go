@@ -47,7 +47,7 @@ func main() {
 	userSeed, err := user.Seed()
 	check(err)
 
-	accountToken, err := valiss.Issue(operator, accountPub, valiss.WithName("acme"),
+	accountToken, err := valiss.IssueAccount(operator, accountPub, valiss.WithName("acme"),
 		valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	check(err)
 	userToken, err := valiss.IssueUser(account, userPub, valiss.WithName("event-emitter"),

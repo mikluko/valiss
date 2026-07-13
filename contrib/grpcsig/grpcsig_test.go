@@ -36,7 +36,7 @@ func chainAt(t *testing.T, epoch uint64) (nkeys.KeyPair, string, creds.Creds) {
 	require.NoError(t, err)
 	userSeed, err := user.Seed()
 	require.NoError(t, err)
-	acctTok, err := valiss.Issue(op, accountPub, valiss.WithName("acme"), valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.IssueAccount(op, accountPub, valiss.WithName("acme"), valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	userTok, err := valiss.IssueUser(account, userPub, valiss.WithName("alice"), valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)

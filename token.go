@@ -274,11 +274,11 @@ func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) 
 	})
 }
 
-// Issue mints an account token signed by the operator key. The token
-// subject is the tenant's account public key and WithName carries the
-// tenant id; the tenant signs requests with the seed matching the subject
-// key.
-func Issue(operator nkeys.KeyPair, tenantPubKey string, opts ...IssueOption) (string, error) {
+// IssueAccount mints an account token signed by the operator key. The
+// token subject is the tenant's account public key and WithName carries
+// the tenant id; the tenant signs requests with the seed matching the
+// subject key.
+func IssueAccount(operator nkeys.KeyPair, tenantPubKey string, opts ...IssueOption) (string, error) {
 	if pub, err := operator.PublicKey(); err != nil || !nkeys.IsValidPublicOperatorKey(pub) {
 		return "", errors.New("valiss: account tokens must be signed by an operator-type nkey (expected an SO... seed)")
 	}
@@ -305,6 +305,14 @@ func Issue(operator nkeys.KeyPair, tenantPubKey string, opts ...IssueOption) (st
 		NotBefore: cfg.notBefore,
 		Valiss:    accountBody{Type: accountType, Epoch: cfg.epoch, Ext: cfg.ext},
 	})
+}
+
+// Issue mints an account token signed by the operator key.
+//
+// Deprecated: Use IssueAccount, which names the minted level the way
+// IssueOperator, IssueUser, and IssueMessage do.
+func Issue(operator nkeys.KeyPair, tenantPubKey string, opts ...IssueOption) (string, error) {
+	return IssueAccount(operator, tenantPubKey, opts...)
 }
 
 // IssueUser mints a user token signed by a tenant's account key, delegating

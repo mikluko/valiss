@@ -23,12 +23,18 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 - **Breaking.** Names are optional at every level and ride the new
   `WithName` option; the positional `name` parameters are gone:
   `Issue(operator, name, tenantPubKey, ...)` becomes
-  `Issue(operator, tenantPubKey, valiss.WithName(name), ...)` and
+  `IssueAccount(operator, tenantPubKey, valiss.WithName(name), ...)` and
   `IssueUser(account, name, userPubKey, ...)` becomes
   `IssueUser(account, userPubKey, valiss.WithName(name), ...)`. An entity
   minted without `WithName` is represented by its public key, as before.
   `IssueMessage` rejects `WithName` (messages are events, not entities).
   (#13)
+
+### Deprecated
+
+- `Issue` is deprecated in favor of the new `IssueAccount`, which names the
+  minted level the way `IssueOperator`, `IssueUser`, and `IssueMessage` do.
+  `Issue` remains as a thin wrapper with the new signature.
 
 ## [0.9.0] - 2026-07-13
 

@@ -220,7 +220,7 @@ func mintAccount(out, msg io.Writer, operator nkeys.KeyPair, acct Account) error
 		return err
 	}
 	tok, meta, err := mintToken(func() (string, error) {
-		return valiss.Issue(operator, pub, append([]valiss.IssueOption{valiss.WithName(acct.Name)}, validity(acct.Expires, acct.NotBefore)...)...)
+		return valiss.IssueAccount(operator, pub, append([]valiss.IssueOption{valiss.WithName(acct.Name)}, validity(acct.Expires, acct.NotBefore)...)...)
 	}, acct.Name, pub, generated)
 	if err != nil {
 		return err
@@ -262,7 +262,7 @@ func mintUser(out, msg io.Writer, operator nkeys.KeyPair, acct Account, userName
 	)
 	if operator != nil {
 		tok, meta, err := mintToken(func() (string, error) {
-			return valiss.Issue(operator, acct.Key, append([]valiss.IssueOption{valiss.WithName(acct.Name)}, validity(acct.Expires, acct.NotBefore)...)...)
+			return valiss.IssueAccount(operator, acct.Key, append([]valiss.IssueOption{valiss.WithName(acct.Name)}, validity(acct.Expires, acct.NotBefore)...)...)
 		}, acct.Name, acct.Key, false)
 		if err != nil {
 			return err
