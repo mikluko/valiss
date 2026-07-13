@@ -85,7 +85,7 @@ func unaryInfo(method string) *grpc.UnaryServerInfo {
 func TestExtEnforcement(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, _ := tenantKeys(t)
-	tok, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"),
+	tok, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"),
 		valiss.WithExtension(Ext{Methods: []string{"/example.v1.WidgetService/*"}}),
 		valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
@@ -111,7 +111,7 @@ func TestExtEnforcement(t *testing.T) {
 	})
 
 	t.Run("token without extension denied by default", func(t *testing.T) {
-		open, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
+		open, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		err = invoke(auth, open, "/anything/Method")
 		assert.Equal(t, codes.PermissionDenied, status.Code(err))
@@ -119,14 +119,14 @@ func TestExtEnforcement(t *testing.T) {
 	})
 
 	t.Run("token without extension passes with AllowMissingExtension", func(t *testing.T) {
-		open, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
+		open, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		lax := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}, clock), AllowMissingExtension())
 		assert.NoError(t, invoke(lax, open, "/anything/Method"))
 	})
 
 	t.Run("empty Methods grants nothing", func(t *testing.T) {
-		none, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"),
+		none, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"),
 			valiss.WithExtension(Ext{}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		err = invoke(auth, none, "/anything/Method")
@@ -134,7 +134,7 @@ func TestExtEnforcement(t *testing.T) {
 	})
 
 	t.Run("wildcard grants everything explicitly", func(t *testing.T) {
-		all, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"),
+		all, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"),
 			valiss.WithExtension(Ext{Methods: []string{"*"}}), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		assert.NoError(t, invoke(auth, all, "/anything/Method"))
@@ -144,7 +144,7 @@ func TestExtEnforcement(t *testing.T) {
 func TestAuthenticate(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	tenant, tenantPub, _ := tenantKeys(t)
-	tok, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
+	tok, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	claims, err := valiss.VerifyAccount(tok, opPub)
 	require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestAuthenticate(t *testing.T) {
 func TestCredentials(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
+	tok, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	c, err := NewCredentials(creds.Creds{AccountToken: tok, Seed: seed})
@@ -232,7 +232,7 @@ func TestBearerCredentials(t *testing.T) {
 	account, accountPub, _ := tenantKeys(t)
 	_, userPub, _ := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, accountPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.IssueAccount(op, accountPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	auth := NewAuthenticator(valiss.NewVerifier(opPub, valiss.AllowAll{}), AllowMissingExtension())
 	handler := func(context.Context, any) (any, error) { return nil, nil }
@@ -260,7 +260,7 @@ func TestBearerCredentials(t *testing.T) {
 func TestCredsEndToEnd(t *testing.T) {
 	op, opPub := issuerKeys(t)
 	_, tenantPub, seed := tenantKeys(t)
-	tok, err := valiss.Issue(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
+	tok, err := valiss.IssueAccount(op, tenantPub, valiss.WithName("acme"), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 
 	parsed, err := creds.Parse(creds.Format(creds.Creds{AccountToken: tok, Seed: seed}))
@@ -282,7 +282,7 @@ func TestUserChain(t *testing.T) {
 	account, accountPub, _ := tenantKeys(t)
 	_, userPub, userSeed := userKeys(t)
 
-	acctTok, err := valiss.Issue(op, accountPub, valiss.WithName("acme"),
+	acctTok, err := valiss.IssueAccount(op, accountPub, valiss.WithName("acme"),
 		valiss.WithExtension(Ext{Methods: []string{"/svc/*"}}), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	userTok, err := valiss.IssueUser(account, userPub, valiss.WithName("alice"),

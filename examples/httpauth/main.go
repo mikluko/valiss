@@ -43,7 +43,7 @@ func main() {
 	accountSeed, err := account.Seed()
 	check(err)
 
-	tok, err := valiss.Issue(operator, accountPub,
+	tok, err := valiss.IssueAccount(operator, accountPub,
 		valiss.WithName("acme"),
 		valiss.WithExtension(httpauth.Ext{Methods: []string{"GET"}, Paths: []string{"/v1/*"}}),
 		valiss.WithExtension(queryFilters{Regions: []string{"eu", "us"}}),

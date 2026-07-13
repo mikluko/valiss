@@ -22,7 +22,7 @@ func newMessageChain(t *testing.T, epoch uint64) messageChainFixture {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
-	acctTok, err := Issue(op, accountPub, WithName("acme"), WithEpoch(epoch), WithTTL(time.Hour))
+	acctTok, err := IssueAccount(op, accountPub, WithName("acme"), WithEpoch(epoch), WithTTL(time.Hour))
 	require.NoError(t, err)
 	userTok, err := IssueUser(account, userPub, WithName("alice"), WithEpoch(epoch), WithTTL(time.Hour))
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestIssueMessage(t *testing.T) {
 			WithChecksum(Checksum(nil)),
 			WithChain(f.accountToken, f.userToken),
 		} {
-			_, err := Issue(f.op, f.accountPub, WithName("acme"), opt)
+			_, err := IssueAccount(f.op, f.accountPub, WithName("acme"), opt)
 			assert.ErrorContains(t, err, "apply only to message tokens")
 			_, err = IssueUser(f.account, f.userPub, WithName("alice"), opt)
 			assert.ErrorContains(t, err, "apply only to message tokens")
