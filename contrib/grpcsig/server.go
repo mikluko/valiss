@@ -13,9 +13,9 @@ import (
 )
 
 type server struct {
-	operatorPubKey string
-	verifyOpts     []valiss.VerifyMessageOption
-	cache          valiss.ChainCache
+	verify     func(token string, opts ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error)
+	verifyOpts []valiss.VerifyMessageOption
+	cache      valiss.ChainCache
 }
 
 // ServerOption configures UnaryServerInterceptor.
@@ -56,7 +56,25 @@ func WithChainCache(cache valiss.ChainCache) ServerOption {
 // attached. WithChainCache remembers negotiated chains so the retransmit
 // happens once per emitter, not per call.
 func UnaryServerInterceptor(operatorPubKey string, opts ...ServerOption) grpc.UnaryServerInterceptor {
-	s := &server{operatorPubKey: operatorPubKey}
+	verify := func(token string, verifyOpts ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error) {
+		return valiss.VerifyMessage(token, operatorPubKey, verifyOpts...)
+	}
+	return newServerInterceptor(verify, opts)
+}
+
+// KeyringUnaryServerInterceptor is UnaryServerInterceptor for a receiver
+// trusting several operators: each call verifies against the keyring entry
+// its chain names (valiss.VerifyMessageKeyring), and handlers tell trust
+// domains apart by MessageClaims.Operator.
+func KeyringUnaryServerInterceptor(keyring *valiss.Keyring, opts ...ServerOption) grpc.UnaryServerInterceptor {
+	verify := func(token string, verifyOpts ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error) {
+		return valiss.VerifyMessageKeyring(token, keyring, verifyOpts...)
+	}
+	return newServerInterceptor(verify, opts)
+}
+
+func newServerInterceptor(verify func(string, ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error), opts []ServerOption) grpc.UnaryServerInterceptor {
+	s := &server{verify: verify}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -96,7 +114,7 @@ func UnaryServerInterceptor(operatorPubKey string, opts ...ServerOption) grpc.Un
 			}
 			verifyOpts = append(verifyOpts, s.verifyOpts...)
 			verifyOpts = append(verifyOpts, valiss.ExpectAudience(info.FullMethod), valiss.WithPayload(p))
-			return valiss.VerifyMessage(tok, s.operatorPubKey, verifyOpts...)
+			return s.verify(tok, verifyOpts...)
 		}
 
 		claims, err := verify(detached || cached)

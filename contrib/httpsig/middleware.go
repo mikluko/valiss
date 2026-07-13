@@ -10,10 +10,10 @@ import (
 )
 
 type middleware struct {
-	operatorPubKey string
-	verifyOpts     []valiss.VerifyMessageOption
-	cache          valiss.ChainCache
-	next           http.Handler
+	verify     func(token string, opts ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error)
+	verifyOpts []valiss.VerifyMessageOption
+	cache      valiss.ChainCache
+	next       http.Handler
 }
 
 // MiddlewareOption configures NewMiddleware.
@@ -54,8 +54,26 @@ func WithChainCache(cache valiss.ChainCache) MiddlewareOption {
 // retransmit with the chain attached. WithChainCache remembers negotiated
 // chains so the retransmit happens once per emitter, not per message.
 func NewMiddleware(operatorPubKey string, opts ...MiddlewareOption) func(http.Handler) http.Handler {
+	verify := func(token string, verifyOpts ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error) {
+		return valiss.VerifyMessage(token, operatorPubKey, verifyOpts...)
+	}
+	return newMiddleware(verify, opts)
+}
+
+// NewKeyringMiddleware is NewMiddleware for a receiver trusting several
+// operators: each message verifies against the keyring entry its chain
+// names (valiss.VerifyMessageKeyring), and handlers tell trust domains
+// apart by MessageClaims.Operator.
+func NewKeyringMiddleware(keyring *valiss.Keyring, opts ...MiddlewareOption) func(http.Handler) http.Handler {
+	verify := func(token string, verifyOpts ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error) {
+		return valiss.VerifyMessageKeyring(token, keyring, verifyOpts...)
+	}
+	return newMiddleware(verify, opts)
+}
+
+func newMiddleware(verify func(string, ...valiss.VerifyMessageOption) (*valiss.MessageClaims, error), opts []MiddlewareOption) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		m := &middleware{operatorPubKey: operatorPubKey, next: next}
+		m := &middleware{verify: verify, next: next}
 		for _, opt := range opts {
 			opt(m)
 		}
@@ -102,7 +120,7 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		opts = append(opts, m.verifyOpts...)
 		opts = append(opts, valiss.ExpectAudience(Audience(r)), valiss.WithPayload(body))
-		return valiss.VerifyMessage(tok, m.operatorPubKey, opts...)
+		return m.verify(tok, opts...)
 	}
 
 	claims, err := verify(detached || cached)
