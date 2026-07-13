@@ -2,7 +2,8 @@
 
 **VAL**idator-**ISS**uer: decentralized tenant authentication for Go
 services, gRPC and HTTP, built on a three-level chain of Ed25519 keys:
-operator → account → user.
+operator → account → user — with an optional fourth level of per-message
+proof-of-origin tokens.
 
 Most multi-tenant services end up with a central auth dependency: an OAuth
 provider, a session store, a per-tenant key registry — something every
@@ -62,6 +63,87 @@ operator token's own `exp` bounds the entire domain, forcing a periodic
 rotation ceremony. The pinned public key remains the trust anchor — the
 operator token only carries policy signed by it. Selective revocation stays
 with the allowlist; the two levers are complementary.
+
+## Message tokens
+
+A service that emits artifacts to third parties — webhooks, queue messages,
+exported documents — can extend the chain one level further with **message
+tokens**: a short-lived JWT minted with a user key, one per emitted message,
+that any receiver can verify **offline** knowing only the published operator
+public key. The token binds the destination (`aud`), the exact payload bytes
+(a SHA-256 checksum claim), a short validity window, and the trust-domain
+epoch:
+
+```go
+// Emitter: holds the user seed and its chain tokens.
+payload := renderWebhook(event)
+tok, _ := valiss.IssueMessage(userKP,
+    valiss.WithAudience("https://receiver.example/hook"),
+    valiss.WithChecksum(valiss.Checksum(payload)),
+    valiss.WithTTL(30*time.Second),
+    valiss.WithEpoch(epoch),
+    valiss.WithChain(accountToken, userToken),
+)
+
+// Receiver: knows only the operator public key.
+claims, err := valiss.VerifyMessage(tok, operatorPub,
+    valiss.ExpectAudience("https://receiver.example/hook"),
+    valiss.WithPayload(receivedBody),
+)
+// claims.Account.Name / claims.User.Name identify the emitter.
+```
+
+Verification walks the full chain operator → account → user → message and
+requires every level to agree on the epoch; `WithOperatorPolicy(opTok)`
+additionally enforces the current domain epoch and the operator token's own
+window. `ExpectAudience` is the lever against cross-destination replay,
+`WithPayload` against payload tampering — receivers should set both.
+Stored messages verify after token expiry with `valiss.At(receivedAt)`,
+which evaluates all windows and policy as of that instant.
+
+The chain travels either embedded (`WithChain` at mint — the token is fully
+self-contained at the cost of roughly three tokens of size) or out-of-band
+(`WithChainTokens` on `VerifyMessage` — smaller tokens, but the receiver
+must be handed the chain separately). A token that embeds a chain must match
+any supplied one.
+
+**Message tokens are proofs, not credentials.** Possession of one grants
+nothing: the request `Verifier` never accepts them, and receivers must not
+treat them as bearer credentials. Offline receivers hold no allowlist; an
+online receiver that wants revocation checks `claims.Account.ID` against its
+own allowlist.
+
+Two contrib packages wire this up end to end. `contrib/httpsig`: a client
+`RoundTripper` that mints a token per outgoing request (audience = host +
+path, checksum over the body) and a middleware that verifies it:
+
+```go
+// Emitter (bundle creds: account token + user token + user seed).
+transport, _ := httpsig.NewTransport(c, nil)
+client := &http.Client{Transport: transport}
+
+// Receiver.
+mw := httpsig.NewMiddleware(operatorPub)
+srv := &http.Server{Handler: mw(hookHandler)}
+// in the handler: claims, ok := valiss.MessageFromContext(r.Context())
+```
+
+`contrib/grpcsig`: unary interceptors on both ends (audience = full method,
+checksum over the request message's deterministic protobuf encoding — keep
+the protobuf runtime versions of emitter and receiver in step):
+
+```go
+ci, _ := grpcsig.UnaryClientInterceptor(c)
+conn, _ := grpc.NewClient(addr, grpc.WithUnaryInterceptor(ci), ...)
+
+srv := grpc.NewServer(grpc.UnaryInterceptor(
+    grpcsig.UnaryServerInterceptor(operatorPub)))
+```
+
+The transports pin the audience and payload bindings themselves; extra
+`valiss.VerifyMessageOption`s (e.g. `WithOperatorPolicy`) pass through. The
+mint TTL defaults to `valiss.DefaultMessageTTL` (30s), overridable with each
+package's `WithTTL`.
 
 ## Extensions
 
@@ -142,12 +224,14 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
 
 ## Layout
 
-- root (`github.com/mikluko/valiss`) — token issue/verify (account and user
-  level), request sign/verify, allowlist, the request `Verifier`, extension
-  plumbing, and `IdentityFromContext`
+- root (`github.com/mikluko/valiss`) — token issue/verify (account, user,
+  and message level), request sign/verify, allowlist, the request `Verifier`,
+  extension plumbing, and `IdentityFromContext`
 - `creds` — client creds file (tokens + seed in one marker-delimited file)
 - `contrib/httpauth` — net/http middleware, client transport, HTTP extension
 - `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
+- `contrib/httpsig` — message-token transport and middleware for net/http
+- `contrib/grpcsig` — message-token unary interceptors for gRPC
 - `examples/` — runnable end-to-end demos, including the manifest-driven
   `examples/minter` credential minting tool
 
@@ -191,7 +275,10 @@ transport, _ := httpauth.NewTransport(c, nil)
 client := &http.Client{Transport: transport}
 ```
 
-Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`.
+Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`;
+`go run ./examples/httpsig` and `go run ./examples/grpcsig` demo per-message
+proofs of origin end to end, including post-expiry re-verification of a
+stored message and replay/tamper rejection.
 
 Servers that hold account tokens in static configuration accept
 user-token-only requests via

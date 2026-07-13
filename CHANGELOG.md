@@ -9,6 +9,32 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+### Added
+
+- Message tokens: a fourth, optional chain level of per-message
+  proof-of-origin tokens minted with a user key and verifiable offline
+  against the operator public key alone. `IssueMessage` mints a short-lived,
+  self-signed token binding the destination (`WithAudience`, the JWT `aud`
+  claim, new on the wire format), the payload bytes (`WithChecksum` +
+  `Checksum` helper), the epoch, and optionally the embedded provenance
+  chain (`WithChain`). `VerifyMessage` walks the full chain, requires all
+  levels to agree on the epoch, and enforces the bindings via the new
+  verify options `ExpectAudience`, `WithPayload`, `RequireChecksum`,
+  `WithOperatorPolicy`, `WithChainTokens`, `WithMessageSkew`, and `At`
+  (verification as of a past instant, for stored messages). Message tokens
+  are proofs, not credentials: the request `Verifier` never accepts them.
+  (#9)
+- Message-token transport packages `contrib/httpsig` and `contrib/grpcsig`,
+  both carrying the token in the new `valiss-message-token` header and
+  injecting verified claims via `valiss.MessageFromContext` (with
+  `valiss.ContextWithMessage` and `valiss.DefaultMessageTTL` supporting them
+  in the root package): `httpsig.NewTransport` / `httpsig.NewMiddleware`
+  bind host + path and the request body; `grpcsig.UnaryClientInterceptor` /
+  `grpcsig.UnaryServerInterceptor` bind the full method and the request
+  message's deterministic protobuf encoding. Emitters take bundle creds
+  (account token, user token, user seed) and derive the epoch from the
+  chain. Runnable demos: `examples/httpsig`, `examples/grpcsig`. (#9)
+
 ## [0.7.0] - 2026-07-10
 
 ### Changed

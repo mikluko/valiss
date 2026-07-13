@@ -14,6 +14,9 @@ const (
 	HeaderTimestamp    = "valiss-timestamp"
 	HeaderSignature    = "valiss-signature"
 	HeaderNonce        = "valiss-nonce"
+	// HeaderMessageToken carries a per-message proof of origin
+	// (IssueMessage); it is never a request credential.
+	HeaderMessageToken = "valiss-message-token"
 )
 
 // Request is the per-request material a transport extracts from headers.

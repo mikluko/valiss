@@ -19,6 +19,12 @@
 // (SO.../O...) sign account tokens for account keys (SA.../A...), account
 // keys sign user tokens for user keys (SU.../U...).
 //
+// A user key may additionally mint per-message tokens (IssueMessage): a
+// fourth, optional chain level binding a token to a destination and payload
+// checksum, offline-verifiable by anyone holding the operator public key
+// (VerifyMessage). Message tokens are proofs of origin, never credentials:
+// possession grants nothing, and the request Verifier does not accept them.
+//
 // Authorization rides named extension claims (Extension, WithExtension):
 // typed payloads the scheme signs and transports but assigns no meaning.
 // The contrib transports enforce their extensions (HTTP hosts/methods/paths,
@@ -107,6 +113,9 @@ type issueConfig struct {
 	notBefore int64
 	epoch     uint64
 	bearer    bool
+	audience  string
+	checksum  string
+	chain     *messageChain
 	ext       Extensions
 	err       error
 }
@@ -136,6 +145,37 @@ func WithNotBefore(t time.Time) IssueOption {
 // short validity window. Only IssueUser accepts this option.
 func WithBearer() IssueOption {
 	return func(c *issueConfig) { c.bearer = true }
+}
+
+// WithAudience binds a message token to its destination (the JWT aud
+// claim): a URL, queue name, or recipient id. Receivers that verify with
+// ExpectAudience reject tokens minted for anywhere else, closing
+// cross-destination replay. Only IssueMessage accepts this option.
+func WithAudience(aud string) IssueOption {
+	return func(c *issueConfig) { c.audience = aud }
+}
+
+// WithChecksum embeds the lowercase-hex SHA-256 of the message payload
+// exactly as delivered (see Checksum), binding the token to the bytes.
+// Receivers compare it via WithPayload or read it from MessageClaims. Only
+// IssueMessage accepts this option.
+func WithChecksum(sum string) IssueOption {
+	return func(c *issueConfig) {
+		if !isHexSHA256(sum) {
+			c.err = errors.New("valiss: checksum must be the lowercase-hex SHA-256 of the payload")
+			return
+		}
+		c.checksum = sum
+	}
+}
+
+// WithChain embeds the emitter's provenance chain — the operator-signed
+// account token and the account-signed user token — into the message token,
+// so a receiver needs nothing but the operator public key (see also the
+// verify-side WithChainTokens for out-of-band delivery). Only IssueMessage
+// accepts this option.
+func WithChain(accountToken, userToken string) IssueOption {
+	return func(c *issueConfig) { c.chain = &messageChain{Account: accountToken, User: userToken} }
 }
 
 // WithEpoch stamps the trust-domain epoch on the token. On an operator
@@ -175,6 +215,15 @@ func WithExtension(v Extension) IssueOption {
 	}
 }
 
+// rejectMessageOptions guards the identity-token issuers against options
+// that carry meaning only on message tokens.
+func (c *issueConfig) rejectMessageOptions() error {
+	if c.audience != "" || c.checksum != "" || c.chain != nil {
+		return errors.New("valiss: audience, checksum, and chain apply only to message tokens")
+	}
+	return nil
+}
+
 // IssueOperator mints the self-signed operator token: the trust domain's
 // policy statement (epoch, validity window, extensions), signed by the
 // operator key over its own public key. Servers configured with it via
@@ -194,6 +243,9 @@ func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) 
 	}
 	if cfg.bearer {
 		return "", errors.New("valiss: bearer applies only to user tokens")
+	}
+	if err := cfg.rejectMessageOptions(); err != nil {
+		return "", err
 	}
 	return encodeToken(operator, &wire[operatorBody]{
 		Subject:   pub,
@@ -223,6 +275,9 @@ func Issue(operator nkeys.KeyPair, name, tenantPubKey string, opts ...IssueOptio
 	if cfg.bearer {
 		return "", errors.New("valiss: bearer applies only to user tokens")
 	}
+	if err := cfg.rejectMessageOptions(); err != nil {
+		return "", err
+	}
 	return encodeToken(operator, &wire[accountBody]{
 		Name:      name,
 		Subject:   tenantPubKey,
@@ -249,6 +304,9 @@ func IssueUser(account nkeys.KeyPair, name, userPubKey string, opts ...IssueOpti
 	}
 	if cfg.err != nil {
 		return "", cfg.err
+	}
+	if err := cfg.rejectMessageOptions(); err != nil {
+		return "", err
 	}
 	return encodeToken(account, &wire[userBody]{
 		Name:      name,

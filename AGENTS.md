@@ -14,12 +14,12 @@ go test ./...                       # full test suite
 go test . -run TestVerifyRequest    # single test in the root package (testify throughout)
 go vet ./...
 go run ./examples/minter keygen operator  # the example CLI
-go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpauth)
+go run ./examples/grpcauth             # end-to-end demo (also ./examples/httpauth, ./examples/httpsig, ./examples/grpcsig)
 ```
 
 ## Architecture
 
-Three-level trust chain rooted in Ed25519 nkeys: an **operator** (`SO...`/`O...`) signs **account** (tenant, `SA...`/`A...`) tokens; an account may sign **user** (`SU...`/`U...`) tokens. Servers pin only the operator public key. The operator may additionally publish a self-signed **operator token** (`IssueOperator`) carrying domain policy: an `epoch` counter plus an optional validity window; `WithOperatorToken` on the verifier enforces that every account and user token echoes the current epoch (`WithEpoch` at mint), making an epoch bump + re-mint a cryptographic mass revocation, and the operator token's own `exp` a domain-wide expiry.
+Three-level trust chain rooted in Ed25519 nkeys: an **operator** (`SO...`/`O...`) signs **account** (tenant, `SA...`/`A...`) tokens; an account may sign **user** (`SU...`/`U...`) tokens. A user key may additionally mint per-message **message tokens** (`IssueMessage`/`VerifyMessage`, message.go): self-signed (`iss == sub`), expiry-mandatory proofs of origin binding a destination (`aud`), a payload checksum, and the epoch, offline-verifiable against the operator public key with the chain embedded (`WithChain`) or supplied out-of-band (`WithChainTokens`); `At(t)` verifies stored messages as of a past instant. Servers pin only the operator public key. The operator may additionally publish a self-signed **operator token** (`IssueOperator`) carrying domain policy: an `epoch` counter plus an optional validity window; `WithOperatorToken` on the verifier enforces that every account and user token echoes the current epoch (`WithEpoch` at mint), making an epoch bump + re-mint a cryptographic mass revocation, and the operator token's own `exp` a domain-wide expiry.
 
 Tokens are valiss's own typed claims (claims.go): RFC 7519 standard fields plus a `valiss` section (`type`, `epoch`, `bearer`, and named `ext` extensions). `sub` is the subject's public key (no keyless subjects) and `name` carries the human label. Validity is absolute and optional: no `exp` = never expires; `nbf` supported. Go-side, the base `Claims` struct is RFC-only (jti/iss/sub/iat/exp/nbf); `OperatorClaims`, `AccountClaims{Claims, Name, Epoch, Ext}` and `UserClaims{Claims, Name, Epoch, Bearer, Ext}` embed it via the golang-jwt-style registered-claims pattern.
 
@@ -36,15 +36,17 @@ Extensions are self-naming: `Extension interface{ ExtensionName() string }`, min
 
 Layout:
 
-- root — token issue/verify (`Issue`/`IssueUser`, `VerifyAccount`/`VerifyUser`/`Decode`), `SignRequest`/`VerifySignature`, `Allowlist`, `Verifier`, extension plumbing, `IdentityFromContext`. `VerifyAccount`/`VerifyUser` deliberately do NOT check expiry or allowlist; `Verifier` layers those so callers get precise errors. `Decode` returns RFC-only `Claims` without establishing trust (tooling).
+- root — token issue/verify (`Issue`/`IssueUser`/`IssueMessage`, `VerifyAccount`/`VerifyUser`/`VerifyMessage`/`Decode`), `SignRequest`/`VerifySignature`, `Allowlist`, `Verifier`, extension plumbing, `IdentityFromContext`. `VerifyAccount`/`VerifyUser` deliberately do NOT check expiry or allowlist; `Verifier` layers those so callers get precise errors. `Decode` returns RFC-only `Claims` without establishing trust (tooling).
 - `creds` — client creds file (`Creds`: optional account token + optional user token + optional seed; at least one token), marker-delimited text. A *bundle* is user creds that also embed the account token; bearer creds have no seed.
 - `contrib/httpauth`, `contrib/grpcauth` — transport adapters over `valiss.Verifier`: header extraction, error mapping (401/403, Unauthenticated/PermissionDenied), extension enforcement, client-side attachment, all constructed from a `creds.Creds`. Wire headers: `valiss-account-token`, `valiss-user-token`, `valiss-timestamp`, `valiss-signature` (`valiss.Header*` constants).
+- `contrib/httpsig`, `contrib/grpcsig` — message-token (proof-of-origin) adapters, carrying the token in the `valiss-message-token` header: httpsig `NewTransport`/`NewMiddleware` (audience = host + path, checksum over the body), grpcsig `UnaryClientInterceptor`/`UnaryServerInterceptor` (audience = full method, checksum over the deterministic protobuf encoding). Emitters need bundle creds with the user seed, the epoch is derived from the chain tokens (which must agree), and handlers read claims with `valiss.MessageFromContext`.
 - `examples/minter` — the manifest-driven minting tool (single-file, manifest types included), an example rather than a product. Deterministic manifest (`minter.yaml`): one operator, nested accounts/users by `name`, absolute RFC3339 `expires`/`not_before`, seeds only from `VALISS_SEED_<PUBKEY>` env vars. Creds → stdout, metadata (allowlist jti) → stderr; `-bundle` embeds a fresh account token.
 
 ## Conventions
 
 - Error messages are prefixed `valiss:`.
-- Key levels are strict: operator keys sign account tokens, account keys sign user tokens, never the reverse; every token's `sub` is a key of the right type. Do not weaken account keys to user-type keys; delegation depends on every tenant holding an account key.
+- Key levels are strict: operator keys sign account tokens, account keys sign user tokens, user keys sign message tokens, never the reverse; every token's `sub` is a key of the right type. Do not weaken account keys to user-type keys; delegation depends on every tenant holding an account key.
+- Message tokens are proofs of origin, never credentials: possession grants nothing, `Verifier.VerifyRequest` does not accept them, and no verify path may treat one as bearer authentication.
 - All authorization lives in typed extension claims (transport or domain); there is no scope-string mechanism. Base `Claims` stays RFC 7519-only; anything valiss-specific goes on the typed claim structs or into extensions.
 - Terminology: *creds* = the credentials file (subject token + seed); *bundle* = user creds that also carry the upstream account token.
 - Tests use `valiss.WithClock` to inject time; prefer that over sleeping.

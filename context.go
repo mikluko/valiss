@@ -16,3 +16,20 @@ func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	id, ok := ctx.Value(identityKey{}).(*Identity)
 	return id, ok
 }
+
+type messageKey struct{}
+
+// ContextWithMessage returns a context carrying verified message claims.
+// Receiving transports call this after VerifyMessage.
+func ContextWithMessage(ctx context.Context, c *MessageClaims) context.Context {
+	return context.WithValue(ctx, messageKey{}, c)
+}
+
+// MessageFromContext returns the verified message claims a handler uses to
+// attribute an incoming message to its emitter. The bool is false when no
+// message token was verified. Message claims prove origin only; they are
+// not an identity and grant nothing.
+func MessageFromContext(ctx context.Context) (*MessageClaims, bool) {
+	c, ok := ctx.Value(messageKey{}).(*MessageClaims)
+	return c, ok
+}
