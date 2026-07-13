@@ -9,6 +9,20 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+### Added
+
+- Multi-operator request authentication, completing #13:
+  `NewKeyringVerifier(keyring, allowlist, opts...)` is the multi-anchor
+  counterpart of `NewVerifier` — the credential's account-token issuer and
+  epoch select exactly one keyring entry (no trial verification), the
+  entry's validity window and epoch are always enforced across the chain,
+  and the matched trust domain is surfaced on the new `Identity.Operator`
+  (also populated by single-anchor verifiers under `WithOperatorToken`).
+  Drops into `httpauth.NewMiddleware` and `grpcauth.NewAuthenticator`
+  unchanged, since both take a `*Verifier`. `WithOperatorToken` does not
+  combine with a keyring; the allowlist is shared across domains (account
+  token jtis are content hashes and cannot collide between producers).
+
 ## [0.10.0] - 2026-07-13
 
 ### Added

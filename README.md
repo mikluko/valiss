@@ -205,6 +205,15 @@ new-epoch token next to the old, let the producer re-mint at its own pace,
 and bound the window by minting the transitional old-epoch token with a
 short expiry, closing the grace cryptographically.
 
+The same keyring authenticates **requests**: `NewKeyringVerifier(k,
+allowlist)` is the multi-operator counterpart of `NewVerifier`, and drops
+into the existing transports unchanged (`httpauth.NewMiddleware`,
+`grpcauth.NewAuthenticator` take a `*Verifier` either way). Handlers read
+the trust domain from `Identity.Operator`. Entry policy is always enforced;
+`WithOperatorToken` does not combine with a keyring. The allowlist is
+shared across domains — account token jtis are content hashes and cannot
+collide between producers.
+
 ## Extensions
 
 All authorization rides named extension claims: signed, typed payloads under
