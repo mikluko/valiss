@@ -25,6 +25,11 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
   `WithOperatorPolicy`). Transport counterparts:
   `httpsig.NewKeyringMiddleware`, `grpcsig.KeyringUnaryServerInterceptor`.
   Multi-anchor request authentication is a follow-up iteration.
+- `docs/VERIFYING.md`: the complete recipe for verifying valiss tokens
+  without the library (wire format, nkey decoding, chain-walk and
+  message-verification algorithms, request signatures), paired with a
+  README section acknowledging and justifying the deliberate
+  non-interoperability with stock JWT libraries.
 - Operator tokens can carry a human-readable trust-domain label, surfaced
   as `OperatorClaims.Name` with the usual fallback to the public key.
   Groundwork for multi-operator anchor sets (#13), where consumers tell

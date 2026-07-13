@@ -365,6 +365,37 @@ including the allowlist jti — on stderr. User creds carry only the user
 token by default; `-bundle` embeds a fresh account token for servers without
 a resolver. See [`examples/minter/README.md`](examples/minter/README.md).
 
+## Interoperability
+
+valiss tokens are structurally JWTs (JWS Compact Serialization, RFC 7519
+claim names, standard Ed25519 signatures over the standard signing input) —
+but they are **not verifiable with stock JWT libraries**, deliberately:
+
+- The algorithm identifier is `ed25519-nkey`, not the registered `EdDSA`,
+  so RFC-compliant libraries reject the header outright.
+- `iss` and `sub` carry nkey-encoded public keys (role prefix + base32 +
+  CRC16), not JWKs.
+
+This is a considered trade, not an accident. The key's role — operator,
+account, user — is part of the key material itself, so the strict signing
+hierarchy (operator keys sign account tokens, account keys sign user
+tokens, never the reverse) is checkable from the key string alone at every
+hop of the chain walk; a whole class of cross-level confusion bugs cannot
+be expressed. The encoding is also copy-paste-safe for the places keys
+actually live (config files, env vars, CLI flags): uppercase base32 with a
+checksum, so a corrupted key fails parsing instead of failing verification
+mysteriously. Standard-library compatibility would buy little in return:
+no stock JWT middleware can walk a four-level chain, echo epochs, or
+enforce payload checksums anyway — the signature check is the only layer
+it could reuse.
+
+The library is the canonical verifier. Consumers in other languages port
+verification instead; it is a couple hundred lines with no valiss-specific
+cryptography — standard Ed25519 plus JSON — and
+[`docs/VERIFYING.md`](docs/VERIFYING.md) is the complete recipe (wire
+format, nkey decoding, chain-walk and message-verification algorithms,
+request signatures).
+
 ## Prior art
 
 valiss stands on well-trodden ground; these shaped it or solve neighboring
