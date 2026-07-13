@@ -23,6 +23,7 @@ const (
 	operatorType = "operator"
 	accountType  = "account"
 	userType     = "user"
+	messageType  = "message"
 )
 
 // operatorBody is the valiss section of a self-signed operator token: the
@@ -66,14 +67,44 @@ type userBody struct {
 	Ext Extensions `json:"ext,omitempty"`
 }
 
+// messageChain is the provenance chain embedded in a message token
+// (WithChain): everything a receiver needs to walk the chain up to the
+// pinned operator key without fetching anything.
+type messageChain struct {
+	// Account is the operator-signed account token.
+	Account string `json:"account,omitempty"`
+	// User is the account-signed user token of the emitter.
+	User string `json:"user,omitempty"`
+}
+
+// messageBody is the valiss section of a message token: a per-message proof
+// of origin signed by a user key.
+type messageBody struct {
+	// Type discriminates the claim body; always "message".
+	Type string `json:"type"`
+	// Epoch is the trust-domain epoch the token was issued in.
+	Epoch uint64 `json:"epoch,omitempty"`
+	// Checksum is the lowercase-hex SHA-256 of the message payload exactly
+	// as delivered, binding the token to the bytes.
+	Checksum string `json:"checksum,omitempty"`
+	// Chain carries the embedded provenance chain (WithChain).
+	Chain *messageChain `json:"chain,omitempty"`
+	// Ext carries the named extension claims (WithExtension).
+	Ext Extensions `json:"ext,omitempty"`
+}
+
 // wire is the JWT claims document. Standard fields use their RFC 7519 names
 // on the wire; the field order is fixed, keeping the jti hash deterministic.
+// Every standard field except the valiss section is omitempty, so a level
+// that never sets a field (e.g. aud outside message tokens) leaves the byte
+// stream, and therefore the jti derivation, of other levels untouched.
 type wire[B any] struct {
 	ID        string `json:"jti,omitempty"`
 	IssuedAt  int64  `json:"iat,omitempty"`
 	Issuer    string `json:"iss,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Subject   string `json:"sub,omitempty"`
+	Audience  string `json:"aud,omitempty"`
 	Expires   int64  `json:"exp,omitempty"`
 	NotBefore int64  `json:"nbf,omitempty"`
 	Valiss    B      `json:"valiss"`
