@@ -178,6 +178,33 @@ one emitter's chain in configuration
 (`WithVerifyOptions(valiss.WithChainTokens(...))`) answers bare tokens on
 the first attempt with no cache at all.
 
+### Multiple trusted operators
+
+A consumer receiving messages from several independent producers verifies
+against a **keyring** instead of a single anchor. Every entry is a full
+self-signed operator token — never a bare public key — so each trust domain
+always carries a name, an epoch, and a validity window, and per-domain
+policy is enforced on every verification:
+
+```go
+k, _ := valiss.NewKeyring(prodUSOperatorToken, onPremOperatorToken)
+claims, err := valiss.VerifyMessageKeyring(tok, k, valiss.WithPayload(body))
+// claims.Operator.Name distinguishes trust domains: two producers can both
+// have a tenant "acme"; segment by claims.Operator.Name + "/" + claims.Account.Name.
+
+// Transports: httpsig.NewKeyringMiddleware(k), grpcsig.KeyringUnaryServerInterceptor(k).
+```
+
+Entries are selected by issuer, not by trial: the chain names its operator
+(the account token's issuer) and its epoch, and verification runs against
+exactly that entry — an unknown operator, or a known one at an unregistered
+epoch, fails immediately. The keyring rejects two operators sharing a name,
+so a name maps to exactly one key. One key may hold entries at several
+epochs: that is the receiver-side **rotation grace period** — register the
+new-epoch token next to the old, let the producer re-mint at its own pace,
+and bound the window by minting the transitional old-epoch token with a
+short expiry, closing the grace cryptographically.
+
 ## Extensions
 
 All authorization rides named extension claims: signed, typed payloads under

@@ -44,6 +44,12 @@ type MessageClaims struct {
 	// User is the verified emitter identity from the chain; its subject key
 	// signed the message token.
 	User *UserClaims
+	// Operator is the trust domain the message verified under: the keyring
+	// entry on VerifyMessageKeyring, the policy token on VerifyMessage with
+	// WithOperatorPolicy, nil otherwise. Consumers trusting several
+	// operators segment by Operator.Name — the keyring guarantees a name
+	// maps to exactly one operator key.
+	Operator *OperatorClaims
 }
 
 // Checksum returns the lowercase-hex SHA-256 of a payload exactly as
@@ -224,6 +230,58 @@ func WithChainTokens(accountToken, userToken string) VerifyMessageOption {
 // A verified message token proves origin only. It is not a credential:
 // grant nothing for possession of one.
 func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*MessageClaims, error) {
+	return verifyMessage(token, opts, func(cfg *verifyMessageConfig, chainAccount string, at time.Time) (*AccountClaims, *OperatorClaims, error) {
+		account, err := VerifyAccount(chainAccount, operatorPubKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !cfg.hasOperator {
+			return account, nil, nil
+		}
+		operator, err := VerifyOperator(cfg.operatorToken, operatorPubKey)
+		if err != nil {
+			return nil, nil, err
+		}
+		return account, operator, nil
+	})
+}
+
+// VerifyMessageKeyring verifies a per-message proof of origin against a set
+// of trusted operators (see Keyring). The chain names its trust domain —
+// the account token's issuer and epoch select exactly one keyring entry —
+// and verification then runs as VerifyMessage does under that entry's
+// always-enforced policy: the entry token's validity window at the
+// verification instant and its exact epoch. A chain from an unknown
+// operator, or a known operator at an unregistered epoch, fails
+// immediately. The returned claims carry the matched entry as Operator.
+//
+// WithOperatorPolicy does not combine with a keyring: entries carry the
+// policy.
+func VerifyMessageKeyring(token string, keyring *Keyring, opts ...VerifyMessageOption) (*MessageClaims, error) {
+	return verifyMessage(token, opts, func(cfg *verifyMessageConfig, chainAccount string, at time.Time) (*AccountClaims, *OperatorClaims, error) {
+		if cfg.hasOperator {
+			return nil, nil, errors.New("valiss: operator policy applies to single-anchor verification; keyring entries carry policy")
+		}
+		issuer, err := IssuerOf(chainAccount)
+		if err != nil {
+			return nil, nil, err
+		}
+		account, err := VerifyAccount(chainAccount, issuer)
+		if err != nil {
+			return nil, nil, err
+		}
+		operator, ok := keyring.lookup(issuer, account.Epoch)
+		if !ok {
+			return nil, nil, fmt.Errorf("valiss: no trusted operator %s at epoch %d", issuer, account.Epoch)
+		}
+		return account, operator, nil
+	})
+}
+
+// verifyMessage is the shared verification core; anchor resolves and
+// trust-checks the chain's account token and returns the operator policy to
+// enforce (nil for none).
+func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *verifyMessageConfig, chainAccount string, at time.Time) (*AccountClaims, *OperatorClaims, error)) (*MessageClaims, error) {
 	cfg := verifyMessageConfig{skew: DefaultSkew}
 	for _, opt := range opts {
 		opt(&cfg)
@@ -250,7 +308,11 @@ func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*
 	case cfg.chain != nil && (cfg.chain.Account != chain.Account || cfg.chain.User != chain.User):
 		return nil, errors.New("valiss: message token embeds a chain that differs from the supplied chain")
 	}
-	account, err := VerifyAccount(chain.Account, operatorPubKey)
+	at := cfg.at
+	if at.IsZero() {
+		at = time.Now()
+	}
+	account, operator, err := anchor(&cfg, chain.Account, at)
 	if err != nil {
 		return nil, err
 	}
@@ -261,15 +323,7 @@ func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*
 	if user.Subject != c.Issuer {
 		return nil, errors.New("valiss: message token not signed by the chain's user key")
 	}
-	at := cfg.at
-	if at.IsZero() {
-		at = time.Now()
-	}
-	if cfg.hasOperator {
-		operator, err := VerifyOperator(cfg.operatorToken, operatorPubKey)
-		if err != nil {
-			return nil, err
-		}
+	if operator != nil {
 		if operator.Expired(at, cfg.skew) {
 			return nil, errors.New("valiss: operator token expired: the trust domain is closed")
 		}
@@ -294,6 +348,7 @@ func VerifyMessage(token, operatorPubKey string, opts ...VerifyMessageOption) (*
 		Ext:      c.Valiss.Ext,
 		Account:  account,
 		User:     user,
+		Operator: operator,
 	}
 	if account.Expired(at, cfg.skew) {
 		return nil, errors.New("valiss: account token expired")

@@ -11,6 +11,20 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ### Added
 
+- Multiple trusted operators for message verification (#13): `Keyring`
+  holds full self-signed operator tokens (bare public keys are not
+  accepted), one entry per (operator key, epoch) — identical tokens
+  collapse by jti, a second different token for an occupied pair is a
+  registration error, a name maps to exactly one operator key, and one key
+  may hold entries at several epochs, giving the receiver a rotation grace
+  period bounded by the transitional token's own expiry.
+  `VerifyMessageKeyring` selects the entry by the chain's issuer and epoch
+  (no trial verification), always enforces the entry's validity window and
+  epoch, and surfaces the matched trust domain as the new
+  `MessageClaims.Operator` (also populated by `VerifyMessage` under
+  `WithOperatorPolicy`). Transport counterparts:
+  `httpsig.NewKeyringMiddleware`, `grpcsig.KeyringUnaryServerInterceptor`.
+  Multi-anchor request authentication is a follow-up iteration.
 - Operator tokens can carry a human-readable trust-domain label, surfaced
   as `OperatorClaims.Name` with the usual fallback to the public key.
   Groundwork for multi-operator anchor sets (#13), where consumers tell
