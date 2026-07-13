@@ -10,6 +10,11 @@ import (
 	"github.com/nats-io/nkeys"
 )
 
+// DefaultMessageTTL is the validity window the contrib transports mint
+// message tokens with: long enough for delivery latency and clock drift,
+// short enough to bound capture exposure.
+const DefaultMessageTTL = 30 * time.Second
+
 // MessageClaims is the verified content of a message token: a per-message
 // proof of origin, together with the verified chain identities it was
 // checked against. A message token is a proof, not a credential: possession

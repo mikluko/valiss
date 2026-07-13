@@ -113,6 +113,38 @@ treat them as bearer credentials. Offline receivers hold no allowlist; an
 online receiver that wants revocation checks `claims.Account.ID` against its
 own allowlist.
 
+Both contrib transports wire this up end to end. HTTP: a client
+`RoundTripper` that mints a token per outgoing request (audience = host +
+path, checksum over the body) and a middleware that verifies it:
+
+```go
+// Emitter (bundle creds: account token + user token + user seed).
+transport, _ := httpauth.NewMessageTransport(c, nil)
+client := &http.Client{Transport: transport}
+
+// Receiver.
+mw := httpauth.NewMessageMiddleware(operatorPub)
+srv := &http.Server{Handler: mw(hookHandler)}
+// in the handler: claims, ok := valiss.MessageFromContext(r.Context())
+```
+
+gRPC: unary interceptors on both ends (audience = full method, checksum
+over the request message's deterministic protobuf encoding — keep the
+protobuf runtime versions of emitter and receiver in step):
+
+```go
+ci, _ := grpcauth.MessageUnaryClientInterceptor(c)
+conn, _ := grpc.NewClient(addr, grpc.WithUnaryInterceptor(ci), ...)
+
+srv := grpc.NewServer(grpc.UnaryInterceptor(
+    grpcauth.MessageUnaryServerInterceptor(operatorPub)))
+```
+
+The transports pin the audience and payload bindings themselves; extra
+`valiss.VerifyMessageOption`s (e.g. `WithOperatorPolicy`) pass through. The
+mint TTL defaults to `valiss.DefaultMessageTTL` (30s), overridable with each
+package's `WithMessageTTL`.
+
 ## Extensions
 
 All authorization rides named extension claims: signed, typed payloads under
@@ -196,8 +228,10 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
   and message level), request sign/verify, allowlist, the request `Verifier`,
   extension plumbing, and `IdentityFromContext`
 - `creds` — client creds file (tokens + seed in one marker-delimited file)
-- `contrib/httpauth` — net/http middleware, client transport, HTTP extension
-- `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
+- `contrib/httpauth` — net/http middleware, client transport, HTTP extension,
+  message-token transport and middleware
+- `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension,
+  message-token unary interceptors
 - `examples/` — runnable end-to-end demos, including the manifest-driven
   `examples/minter` credential minting tool
 
