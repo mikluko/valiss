@@ -17,7 +17,22 @@ const (
 	// HeaderMessageToken carries a per-message proof of origin
 	// (IssueMessage); it is never a request credential.
 	HeaderMessageToken = "valiss-message-token"
+	// HeaderChainAccountToken and HeaderChainUserToken carry a message
+	// token's provenance chain detached from the token itself, so no single
+	// header grows large. They are chain material for VerifyMessage, never
+	// request credentials.
+	HeaderChainAccountToken = "valiss-chain-account-token"
+	HeaderChainUserToken    = "valiss-chain-user-token"
+	// HeaderChain is the chain-negotiation signal a receiver sends back
+	// (response header on HTTP, trailing metadata on gRPC) with the value
+	// ChainRequired when it cannot verify a chainless message token; the
+	// emitting transport then retries once with the detached chain headers.
+	HeaderChain = "valiss-chain"
 )
+
+// ChainRequired is the HeaderChain value asking the emitter to retransmit
+// with its provenance chain attached.
+const ChainRequired = "required"
 
 // Request is the per-request material a transport extracts from headers.
 type Request struct {

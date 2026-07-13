@@ -9,6 +9,34 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+### Added
+
+- Chain negotiation for the message-token transports (#11): emitters opt in
+  with `WithChainNegotiation()` (`httpsig.NewTransport`,
+  `grpcsig.UnaryClientInterceptor`) to send bare ~650 B tokens instead of
+  embedding the ~1.4 KB chain in every message. A receiver that cannot
+  verify a chainless token answers the `valiss-chain: required` signal
+  (response header on HTTP, trailer on gRPC) and the transport retransmits
+  once with the chain in the detached `valiss-chain-account-token` /
+  `valiss-chain-user-token` headers. `WithChainCache` on the server side
+  (backed by `valiss.ChainCache`; `valiss.NewMemoryChainCache` is the
+  process-local implementation) remembers negotiated chains so the
+  retransmit happens once per emitter, and evicts entries that stop
+  verifying, so a domain rotation self-heals without receiver
+  configuration. Only fully verified chains enter the cache. Root package
+  gains the header constants, `valiss.ErrNoChain` (matched with
+  `errors.Is` to drive the negotiation), and the `ChainCache` interface.
+
+### Changed
+
+- **Breaking.** `httpsig.NewMiddleware` and
+  `grpcsig.UnaryServerInterceptor` now take package options instead of bare
+  `valiss.VerifyMessageOption`s.
+  *Migration:* wrap the previous arguments in `WithVerifyOptions(...)`:
+  `NewMiddleware(pub, valiss.WithOperatorPolicy(tok))` becomes
+  `NewMiddleware(pub, httpsig.WithVerifyOptions(valiss.WithOperatorPolicy(tok)))`.
+  (#11)
+
 ## [0.8.0] - 2026-07-13
 
 ### Added

@@ -141,9 +141,39 @@ srv := grpc.NewServer(grpc.UnaryInterceptor(
 ```
 
 The transports pin the audience and payload bindings themselves; extra
-`valiss.VerifyMessageOption`s (e.g. `WithOperatorPolicy`) pass through. The
-mint TTL defaults to `valiss.DefaultMessageTTL` (30s), overridable with each
-package's `WithTTL`.
+`valiss.VerifyMessageOption`s (e.g. `WithOperatorPolicy`) pass through each
+package's `WithVerifyOptions`. The mint TTL defaults to
+`valiss.DefaultMessageTTL` (30s), overridable with each package's `WithTTL`.
+
+Embedding the chain costs ~1.4 KB per message. High-volume emitters opt
+into **chain negotiation** instead: the emitter sends bare tokens (~650 B),
+and a receiver that does not know the chain answers `valiss-chain:
+required` (response header on HTTP, trailer on gRPC), making the transport
+retransmit once with the chain in detached headers. With a chain cache on
+the receiver the retransmit happens once per emitter, not per message, and
+a domain rotation self-heals: the stale cached chain is evicted and
+re-negotiated on the next message.
+
+```go
+// Emitter: bare tokens, chain on demand.
+transport, _ := httpsig.NewTransport(c, nil, httpsig.WithChainNegotiation())
+// gRPC: grpcsig.UnaryClientInterceptor(c, grpcsig.WithChainNegotiation())
+
+// Receiver: remember negotiated chains between messages.
+mw := httpsig.NewMiddleware(operatorPub,
+    httpsig.WithChainCache(valiss.NewMemoryChainCache()))
+// gRPC: grpcsig.UnaryServerInterceptor(operatorPub,
+//     grpcsig.WithChainCache(valiss.NewMemoryChainCache()))
+```
+
+`NewMemoryChainCache` is process-local; multiple receiver instances avoid
+per-instance warmups by backing `valiss.ChainCache` with shared storage.
+Only chains that survive full verification enter the cache, so it cannot be
+poisoned. Negotiation needs a backchannel: one-way payloads (queue
+messages, exported documents) keep the embedded chain. A receiver that pins
+one emitter's chain in configuration
+(`WithVerifyOptions(valiss.WithChainTokens(...))`) answers bare tokens on
+the first attempt with no cache at all.
 
 ## Extensions
 

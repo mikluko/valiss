@@ -123,7 +123,7 @@ func TestInterceptors(t *testing.T) {
 	t.Run("operator policy enforced", func(t *testing.T) {
 		bumped, err := valiss.IssueOperator(op, valiss.WithEpoch(2))
 		require.NoError(t, err)
-		strict := UnaryServerInterceptor(opPub, valiss.WithOperatorPolicy(bumped))
+		strict := UnaryServerInterceptor(opPub, WithVerifyOptions(valiss.WithOperatorPolicy(bumped)))
 		_, err = strict(incoming(tok), req, unaryInfo("/svc/Emit"), handler)
 		assert.Equal(t, codes.Unauthenticated, status.Code(err))
 		assert.Contains(t, status.Convert(err).Message(), "trust domain epoch 2")

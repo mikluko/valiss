@@ -2,6 +2,7 @@ package grpcsig
 
 import (
 	"context"
+	"errors"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -11,6 +12,34 @@ import (
 	"github.com/mikluko/valiss"
 )
 
+type server struct {
+	operatorPubKey string
+	verifyOpts     []valiss.VerifyMessageOption
+	cache          valiss.ChainCache
+}
+
+// ServerOption configures UnaryServerInterceptor.
+type ServerOption func(*server)
+
+// WithVerifyOptions passes extra options to every valiss.VerifyMessage
+// call, e.g. valiss.WithOperatorPolicy to enforce the domain epoch or
+// valiss.WithChainTokens to pin a single emitter's chain in configuration.
+// A pinned chain takes precedence over negotiated chain material; the
+// interceptor's audience and payload bindings are applied after these
+// options and cannot be weakened by them.
+func WithVerifyOptions(opts ...valiss.VerifyMessageOption) ServerOption {
+	return func(s *server) { s.verifyOpts = append(s.verifyOpts, opts...) }
+}
+
+// WithChainCache stores negotiated chains between calls, so an emitter pays
+// the chain retransmit once instead of on every message. Only chains that
+// survived full verification are stored; an entry that later fails (e.g.
+// after a domain rotation) is dropped and the chain re-negotiated.
+// valiss.NewMemoryChainCache is a process-local implementation.
+func WithChainCache(cache valiss.ChainCache) ServerOption {
+	return func(s *server) { s.cache = cache }
+}
+
 // UnaryServerInterceptor requires every unary call to carry a message token
 // (valiss-message-token metadata) proving the origin of its exact request
 // message at this method: the token is verified against the operator public
@@ -19,10 +48,18 @@ import (
 // Unauthenticated. Handlers read the verified claims with
 // valiss.MessageFromContext.
 //
-// The audience and payload bindings are appended after opts, so they cannot
-// be weakened; pass options like valiss.WithOperatorPolicy or
-// valiss.WithChainTokens to tighten or supply out-of-band material.
-func UnaryServerInterceptor(operatorPubKey string, opts ...valiss.VerifyMessageOption) grpc.UnaryServerInterceptor {
+// The interceptor speaks the receiving side of chain negotiation: detached
+// chain metadata (valiss-chain-account-token, valiss-chain-user-token)
+// supplies the chain for a chainless token, and a chainless token whose
+// chain is not otherwise known is rejected with the valiss-chain: required
+// trailer, asking the client interceptor to retry once with the chain
+// attached. WithChainCache remembers negotiated chains so the retransmit
+// happens once per emitter, not per call.
+func UnaryServerInterceptor(operatorPubKey string, opts ...ServerOption) grpc.UnaryServerInterceptor {
+	s := &server{operatorPubKey: operatorPubKey}
+	for _, opt := range opts {
+		opt(s)
+	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		md, ok := metadata.FromIncomingContext(ctx)
 		if !ok {
@@ -36,14 +73,58 @@ func UnaryServerInterceptor(operatorPubKey string, opts ...valiss.VerifyMessageO
 		if err != nil {
 			return nil, status.Error(codes.Unauthenticated, err.Error())
 		}
-		verifyOpts := append(append([]valiss.VerifyMessageOption{}, opts...),
-			valiss.ExpectAudience(info.FullMethod),
-			valiss.WithPayload(p),
-		)
-		claims, err := valiss.VerifyMessage(tok, operatorPubKey, verifyOpts...)
+
+		// Resolve negotiated chain material: detached metadata outranks the
+		// cache; a pinned chain in the verify options outranks both (it is
+		// applied later, so it wins inside VerifyMessage).
+		chainAccount := first(md, valiss.HeaderChainAccountToken)
+		chainUser := first(md, valiss.HeaderChainUserToken)
+		detached := chainAccount != "" && chainUser != ""
+		cached := false
+		var cacheKey string
+		if !detached && s.cache != nil {
+			if c, err := valiss.Decode(tok); err == nil {
+				cacheKey = c.Issuer
+				chainAccount, chainUser, cached = s.cache.Get(cacheKey)
+			}
+		}
+
+		verify := func(withChain bool) (*valiss.MessageClaims, error) {
+			verifyOpts := make([]valiss.VerifyMessageOption, 0, len(s.verifyOpts)+3)
+			if withChain {
+				verifyOpts = append(verifyOpts, valiss.WithChainTokens(chainAccount, chainUser))
+			}
+			verifyOpts = append(verifyOpts, s.verifyOpts...)
+			verifyOpts = append(verifyOpts, valiss.ExpectAudience(info.FullMethod), valiss.WithPayload(p))
+			return valiss.VerifyMessage(tok, s.operatorPubKey, verifyOpts...)
+		}
+
+		claims, err := verify(detached || cached)
+		if err != nil && cached {
+			// Attribute the failure before evicting: without the cached
+			// chain a self-contained token settles it on its own, and only
+			// a chainless token leaves the cached entry as the suspect.
+			claims, err = verify(false)
+			if err == nil || errors.Is(err, valiss.ErrNoChain) {
+				s.cache.Del(cacheKey)
+			}
+		}
 		if err != nil {
+			if errors.Is(err, valiss.ErrNoChain) {
+				return nil, chainRequired(ctx)
+			}
 			return nil, status.Error(codes.Unauthenticated, err.Error())
+		}
+		if detached && s.cache != nil {
+			s.cache.Put(claims.Subject, chainAccount, chainUser)
 		}
 		return handler(valiss.ContextWithMessage(ctx, claims), req)
 	}
+}
+
+// chainRequired rejects a call while asking the client interceptor to retry
+// with the provenance chain attached, via the valiss-chain trailer.
+func chainRequired(ctx context.Context) error {
+	_ = grpc.SetTrailer(ctx, metadata.Pairs(valiss.HeaderChain, valiss.ChainRequired))
+	return status.Error(codes.Unauthenticated, "message token chain required")
 }
