@@ -22,9 +22,9 @@ func newMessageChain(t *testing.T, epoch uint64) messageChainFixture {
 	op, opPub := issuerKeys(t)
 	account, accountPub := tenantKeys(t)
 	user, userPub := userKeys(t)
-	acctTok, err := Issue(op, "acme", accountPub, WithEpoch(epoch), WithTTL(time.Hour))
+	acctTok, err := Issue(op, accountPub, WithName("acme"), WithEpoch(epoch), WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := IssueUser(account, "alice", userPub, WithEpoch(epoch), WithTTL(time.Hour))
+	userTok, err := IssueUser(account, userPub, WithName("alice"), WithEpoch(epoch), WithTTL(time.Hour))
 	require.NoError(t, err)
 	return messageChainFixture{
 		op: op, account: account, user: user,
@@ -82,6 +82,11 @@ func TestIssueMessage(t *testing.T) {
 		assert.ErrorContains(t, err, "bearer applies only to user tokens")
 	})
 
+	t.Run("name rejected", func(t *testing.T) {
+		_, err := IssueMessage(f.user, WithTTL(time.Minute), WithName("event"))
+		assert.ErrorContains(t, err, "name applies only to operator, account, and user tokens")
+	})
+
 	t.Run("missing expiry rejected", func(t *testing.T) {
 		_, err := IssueMessage(f.user, WithAudience("x"))
 		assert.ErrorContains(t, err, "must carry an expiry")
@@ -104,9 +109,9 @@ func TestIssueMessage(t *testing.T) {
 			WithChecksum(Checksum(nil)),
 			WithChain(f.accountToken, f.userToken),
 		} {
-			_, err := Issue(f.op, "acme", f.accountPub, opt)
+			_, err := Issue(f.op, f.accountPub, WithName("acme"), opt)
 			assert.ErrorContains(t, err, "apply only to message tokens")
-			_, err = IssueUser(f.account, "alice", f.userPub, opt)
+			_, err = IssueUser(f.account, f.userPub, WithName("alice"), opt)
 			assert.ErrorContains(t, err, "apply only to message tokens")
 			_, err = IssueOperator(f.op, opt)
 			assert.ErrorContains(t, err, "apply only to message tokens")
@@ -167,7 +172,7 @@ func TestVerifyMessageChain(t *testing.T) {
 		// A chain whose user token names a different user key than the one
 		// that signed the message token.
 		other, otherPub := userKeys(t)
-		otherUserTok, err := IssueUser(f.account, "mallory", otherPub, WithTTL(time.Hour))
+		otherUserTok, err := IssueUser(f.account, otherPub, WithName("mallory"), WithTTL(time.Hour))
 		require.NoError(t, err)
 		tok, err := IssueMessage(other, WithTTL(time.Minute))
 		require.NoError(t, err)
@@ -207,7 +212,7 @@ func TestVerifyMessageEpoch(t *testing.T) {
 	})
 
 	t.Run("user token epoch differing rejected", func(t *testing.T) {
-		staleUserTok, err := IssueUser(f.account, "alice", f.userPub, WithEpoch(1), WithTTL(time.Hour))
+		staleUserTok, err := IssueUser(f.account, f.userPub, WithName("alice"), WithEpoch(1), WithTTL(time.Hour))
 		require.NoError(t, err)
 		tok, err := IssueMessage(f.user, WithTTL(time.Minute), WithEpoch(2), WithChain(f.accountToken, staleUserTok))
 		require.NoError(t, err)
@@ -286,7 +291,7 @@ func TestVerifyMessageWindows(t *testing.T) {
 	})
 
 	t.Run("expired user token rejected", func(t *testing.T) {
-		shortUserTok, err := IssueUser(f.account, "alice", f.userPub, WithTTL(time.Minute))
+		shortUserTok, err := IssueUser(f.account, f.userPub, WithName("alice"), WithTTL(time.Minute))
 		require.NoError(t, err)
 		tok, err := IssueMessage(f.user, WithTTL(time.Hour), WithChain(f.accountToken, shortUserTok))
 		require.NoError(t, err)

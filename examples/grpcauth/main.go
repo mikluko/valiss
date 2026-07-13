@@ -44,7 +44,8 @@ func main() {
 
 	// Enforcement is fail-closed: every token must carry the gRPC extension,
 	// and allow-all is the explicit wildcard.
-	tok, err := valiss.Issue(operator, "acme", accountPub,
+	tok, err := valiss.Issue(operator, accountPub,
+		valiss.WithName("acme"),
 		valiss.WithExtension(grpcauth.Ext{Methods: []string{"*"}}),
 		valiss.WithTTL(time.Hour),
 	)
@@ -87,7 +88,8 @@ func main() {
 	check(err)
 	userSeed, err := user.Seed()
 	check(err)
-	userTok, err := valiss.IssueUser(account, "alice", userPub,
+	userTok, err := valiss.IssueUser(account, userPub,
+		valiss.WithName("alice"),
 		valiss.WithExtension(grpcauth.Ext{Methods: []string{healthpb.Health_Check_FullMethodName}}),
 		valiss.WithTTL(time.Hour),
 	)

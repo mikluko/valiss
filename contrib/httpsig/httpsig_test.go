@@ -34,9 +34,9 @@ func chainAt(t *testing.T, epoch uint64) (nkeys.KeyPair, string, creds.Creds) {
 	require.NoError(t, err)
 	userSeed, err := user.Seed()
 	require.NoError(t, err)
-	acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
+	acctTok, err := valiss.Issue(op, accountPub, valiss.WithName("acme"), valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
-	userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
+	userTok, err := valiss.IssueUser(account, userPub, valiss.WithName("alice"), valiss.WithEpoch(epoch), valiss.WithTTL(time.Hour))
 	require.NoError(t, err)
 	return op, opPub, creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}
 }
@@ -176,9 +176,9 @@ func TestNewTransportRejections(t *testing.T) {
 		require.NoError(t, err)
 		userSeed, err := user.Seed()
 		require.NoError(t, err)
-		acctTok, err := valiss.Issue(op, "acme", accountPub, valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
+		acctTok, err := valiss.Issue(op, accountPub, valiss.WithName("acme"), valiss.WithEpoch(1), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
-		userTok, err := valiss.IssueUser(account, "alice", userPub, valiss.WithEpoch(2), valiss.WithTTL(time.Hour))
+		userTok, err := valiss.IssueUser(account, userPub, valiss.WithName("alice"), valiss.WithEpoch(2), valiss.WithTTL(time.Hour))
 		require.NoError(t, err)
 		_, err = NewTransport(creds.Creds{AccountToken: acctTok, UserToken: userTok, Seed: userSeed}, nil)
 		assert.ErrorContains(t, err, "chain epochs disagree")
