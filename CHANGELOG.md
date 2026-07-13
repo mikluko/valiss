@@ -9,6 +9,8 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-13
+
 ### Added
 
 - Multiple trusted operators for message verification (#13): `Keyring`
@@ -295,7 +297,8 @@ tokens are all incompatible with 0.3.0; reissue tokens and creds.
   request signature, then hand the tenant identity to the handler. Library
   under `pkg/` (token, creds, grpcauth, httpauth) with a stateless CLI.
 
-[Unreleased]: https://github.com/mikluko/valiss/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/mikluko/valiss/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/mikluko/valiss/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/mikluko/valiss/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/mikluko/valiss/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mikluko/valiss/compare/v0.6.0...v0.7.0
