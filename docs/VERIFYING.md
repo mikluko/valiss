@@ -15,8 +15,11 @@ base64url(payload) "." base64url(signature)`, no padding.
 Header, byte-exact:
 
 ```json
-{"typ":"JWT","alg":"ed25519-nkey"}
+{"typ":"JWT","alg":"ed25519-nkey","ver":1}
 ```
+
+`ver` is the wire-format version. Read it before parsing the payload and
+reject a version you do not implement; the current version is `1`.
 
 Payload is a JSON object with RFC 7519 field names, all optional except
 `valiss`, serialized in this order:
@@ -90,8 +93,9 @@ this. Verifiers that only check signatures may treat `jti` as opaque.
 ## Verifying a token (one level)
 
 1. Split on `.`; require exactly three parts.
-2. Base64url-decode the header; require `typ == "JWT"` and
-   `alg == "ed25519-nkey"`.
+2. Base64url-decode the header; require `typ == "JWT"`,
+   `alg == "ed25519-nkey"`, and `ver == 1`. Reject an unrecognized `ver`
+   before parsing the payload.
 3. Base64url-decode the payload; parse JSON.
 4. Decode the `iss` nkey; verify the Ed25519 signature over
    `part1 "." part2`.
@@ -146,8 +150,11 @@ timestamp (RFC 3339 with nanoseconds, UTC) and a signature
 payload is:
 
 ```
-timestamp + "\n" + lowercase_hex(sha256(request_context))
+"valiss-req-v1\n" + timestamp + "\n" + lowercase_hex(sha256(request_context))
 ```
+
+The `valiss-req-v1\n` prefix is the version tag, bound into the signed bytes.
+A verifier that reconstructs v1 bytes fails closed on any other version.
 
 where `request_context` is the transport's canonical request description:
 `"http\n" method "\n" host "\n" path "\n" nonce` for HTTP,
