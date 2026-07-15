@@ -8,7 +8,7 @@ package httpauth
 import (
 	"net/http"
 
-	"github.com/mikluko/valiss"
+	"valiss.dev/valiss"
 )
 
 type middleware struct {

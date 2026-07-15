@@ -8,8 +8,8 @@ import (
 	"github.com/nats-io/nkeys"
 	"google.golang.org/grpc/credentials"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 // Credentials is a grpc.PerRPCCredentials that attaches the creds' tokens

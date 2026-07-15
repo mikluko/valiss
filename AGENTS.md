@@ -4,7 +4,7 @@ Guidance for AI coding agents working in this repository.
 
 ## What this is
 
-valiss (VALidator-ISSuer) is a Go library for decentralized tenant authentication in gRPC and HTTP services: a three-level chain of Ed25519 keys (operator → account → user). Module: `github.com/mikluko/valiss`, root package `valiss`. Library-first: there is no product binary, only `examples/`. No Makefile or lint config; plain Go toolchain. Only real dependencies: nkeys, yaml, grpc; tokens are hand-rolled nkey-signed JWTs.
+valiss (VALidator-ISSuer) is a Go library for decentralized tenant authentication in gRPC and HTTP services: a three-level chain of Ed25519 keys (operator → account → user). Module: `valiss.dev/valiss`, root package `valiss`. Library-first: there is no product binary, only `examples/`. No Makefile or lint config; plain Go toolchain. Only real dependencies: nkeys, yaml, grpc; tokens are hand-rolled nkey-signed JWTs.
 
 ## Commands
 

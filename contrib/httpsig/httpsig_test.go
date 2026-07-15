@@ -12,8 +12,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 // chainAt mints a full chain at epoch and returns the operator keypair, the

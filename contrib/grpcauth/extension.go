@@ -3,7 +3,7 @@ package grpcauth
 import (
 	"fmt"
 
-	"github.com/mikluko/valiss"
+	"valiss.dev/valiss"
 )
 
 // Ext is the gRPC transport extension claim: it binds a token to specific

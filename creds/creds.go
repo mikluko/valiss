@@ -14,7 +14,18 @@ package creds
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+)
+
+// credsVersion is the creds-file format version. It is emitted as a header
+// line and checked on parse, so a future format is recognized (or cleanly
+// rejected) rather than mis-parsed. It versions the file container only; the
+// tokens inside carry their own wire version. An absent header is read as the
+// current version, since the pre-versioned format is otherwise identical.
+const (
+	credsVersion       = 1
+	credsVersionMarker = "VALISS-CREDS-VERSION:"
 )
 
 // Creds file markers.
@@ -45,6 +56,7 @@ type Creds struct {
 // Format renders the creds file content.
 func Format(b Creds) string {
 	var sb strings.Builder
+	fmt.Fprintf(&sb, "%s %d\n\n", credsVersionMarker, credsVersion)
 	if b.AccountToken != "" {
 		fmt.Fprintf(&sb, "%s\n%s\n%s\n", accountTokenBegin, strings.TrimSpace(b.AccountToken), accountTokenEnd)
 	}
@@ -65,6 +77,9 @@ func Format(b Creds) string {
 // Parse extracts the creds from a file's contents. Every section is optional
 // on its own, but at least one token must be present.
 func Parse(contents string) (Creds, error) {
+	if err := checkVersion(contents); err != nil {
+		return Creds{}, err
+	}
 	var b Creds
 	tok, ok, err := between(contents, accountTokenBegin, accountTokenEnd)
 	if err != nil {
@@ -100,6 +115,28 @@ func Load(path string) (Creds, error) {
 		return Creds{}, fmt.Errorf("valiss: read creds: %w", err)
 	}
 	return Parse(string(raw))
+}
+
+// checkVersion reads the creds-format version header and rejects a version
+// this parser does not implement. An absent header is read as the current
+// version. It is checked before the payload, so an incompatible file is
+// rejected cleanly rather than mis-parsed.
+func checkVersion(contents string) error {
+	for line := range strings.Lines(contents) {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), credsVersionMarker)
+		if !ok {
+			continue
+		}
+		v, err := strconv.Atoi(strings.TrimSpace(rest))
+		if err != nil {
+			return fmt.Errorf("valiss: creds: malformed version %q", strings.TrimSpace(rest))
+		}
+		if v != credsVersion {
+			return fmt.Errorf("valiss: creds: unsupported version %d", v)
+		}
+		return nil
+	}
+	return nil
 }
 
 // between returns the single non-empty line strictly between a begin and end

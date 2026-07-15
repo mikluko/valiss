@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"github.com/mikluko/valiss"
+	"valiss.dev/valiss"
 )
 
 // Authenticator verifies the per-request tenant credential and enforces the

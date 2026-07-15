@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"slices"
 
-	"github.com/mikluko/valiss"
+	"valiss.dev/valiss"
 )
 
 // Ext is the HTTP transport extension claim: it binds a token to specific

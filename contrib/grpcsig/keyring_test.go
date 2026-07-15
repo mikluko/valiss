@@ -12,8 +12,8 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/status"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 // namedChainAt mints a full trust domain and returns the operator token

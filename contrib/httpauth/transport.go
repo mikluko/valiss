@@ -7,8 +7,8 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 // Transport is an http.RoundTripper that attaches the creds' tokens and,

@@ -121,7 +121,7 @@ type issueConfig struct {
 	bearer    bool
 	audience  string
 	checksum  string
-	chain     *messageChain
+	chain     *messageChainV1
 	ext       Extensions
 	err       error
 }
@@ -192,7 +192,7 @@ func WithChecksum(sum string) IssueOption {
 // verify-side WithChainTokens for out-of-band delivery). Only IssueMessage
 // accepts this option.
 func WithChain(accountToken, userToken string) IssueOption {
-	return func(c *issueConfig) { c.chain = &messageChain{Account: accountToken, User: userToken} }
+	return func(c *issueConfig) { c.chain = &messageChainV1{Account: accountToken, User: userToken} }
 }
 
 // WithEpoch stamps the trust-domain epoch on the token. On an operator
@@ -265,12 +265,12 @@ func IssueOperator(operator nkeys.KeyPair, opts ...IssueOption) (string, error) 
 	if err := cfg.rejectMessageOptions(); err != nil {
 		return "", err
 	}
-	return encodeToken(operator, &wire[operatorBody]{
+	return encodeV1(operator, &wireV1[operatorBodyV1]{
 		Name:      cfg.name,
 		Subject:   pub,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    operatorBody{Type: operatorType, Epoch: cfg.epoch, Ext: cfg.ext},
+		Valiss:    operatorBodyV1{Type: operatorType, Epoch: cfg.epoch, Ext: cfg.ext},
 	})
 }
 
@@ -298,12 +298,12 @@ func IssueAccount(operator nkeys.KeyPair, tenantPubKey string, opts ...IssueOpti
 	if err := cfg.rejectMessageOptions(); err != nil {
 		return "", err
 	}
-	return encodeToken(operator, &wire[accountBody]{
+	return encodeV1(operator, &wireV1[accountBodyV1]{
 		Name:      cfg.name,
 		Subject:   tenantPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    accountBody{Type: accountType, Epoch: cfg.epoch, Ext: cfg.ext},
+		Valiss:    accountBodyV1{Type: accountType, Epoch: cfg.epoch, Ext: cfg.ext},
 	})
 }
 
@@ -336,12 +336,12 @@ func IssueUser(account nkeys.KeyPair, userPubKey string, opts ...IssueOption) (s
 	if err := cfg.rejectMessageOptions(); err != nil {
 		return "", err
 	}
-	return encodeToken(account, &wire[userBody]{
+	return encodeV1(account, &wireV1[userBodyV1]{
 		Name:      cfg.name,
 		Subject:   userPubKey,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss:    userBody{Type: userType, Epoch: cfg.epoch, Bearer: cfg.bearer, Ext: cfg.ext},
+		Valiss:    userBodyV1{Type: userType, Epoch: cfg.epoch, Bearer: cfg.bearer, Ext: cfg.ext},
 	})
 }
 
@@ -349,12 +349,12 @@ func IssueUser(account nkeys.KeyPair, userPubKey string, opts ...IssueOption) (s
 // that it is signed by the pinned operator key over itself, and returns the
 // claims. Expiry and activation checks belong to the Verifier.
 func VerifyOperator(token, operatorPubKey string) (*OperatorClaims, error) {
-	c, err := decodeToken[operatorBody](token)
+	c, err := decodeToken(token)
 	if err != nil {
 		return nil, err
 	}
-	if c.Valiss.Type != operatorType {
-		return nil, fmt.Errorf("valiss: not an operator token (type %q)", c.Valiss.Type)
+	if c.Type != operatorType {
+		return nil, fmt.Errorf("valiss: not an operator token (type %q)", c.Type)
 	}
 	if c.Issuer != operatorPubKey || c.Subject != operatorPubKey {
 		return nil, errors.New("valiss: operator token not self-signed by the expected operator")
@@ -365,8 +365,8 @@ func VerifyOperator(token, operatorPubKey string) (*OperatorClaims, error) {
 	return &OperatorClaims{
 		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
 		Name:   nameOf(c.Name, c.Subject),
-		Epoch:  c.Valiss.Epoch,
-		Ext:    c.Valiss.Ext,
+		Epoch:  c.Epoch,
+		Ext:    c.Ext,
 	}, nil
 }
 
@@ -374,12 +374,12 @@ func VerifyOperator(token, operatorPubKey string) (*OperatorClaims, error) {
 // issuer, and returns the claims. It does NOT check expiry, activation, or
 // the allowlist; the Verifier layers those so callers get precise errors.
 func VerifyAccount(token, operatorPubKey string) (*AccountClaims, error) {
-	c, err := decodeToken[accountBody](token)
+	c, err := decodeToken(token)
 	if err != nil {
 		return nil, err
 	}
-	if c.Valiss.Type != accountType {
-		return nil, fmt.Errorf("valiss: not an account token (type %q)", c.Valiss.Type)
+	if c.Type != accountType {
+		return nil, fmt.Errorf("valiss: not an account token (type %q)", c.Type)
 	}
 	if c.Issuer != operatorPubKey {
 		return nil, errors.New("valiss: account token not signed by the expected issuer")
@@ -390,8 +390,8 @@ func VerifyAccount(token, operatorPubKey string) (*AccountClaims, error) {
 	return &AccountClaims{
 		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
 		Name:   nameOf(c.Name, c.Subject),
-		Epoch:  c.Valiss.Epoch,
-		Ext:    c.Valiss.Ext,
+		Epoch:  c.Epoch,
+		Ext:    c.Ext,
 	}, nil
 }
 
@@ -399,12 +399,12 @@ func VerifyAccount(token, operatorPubKey string) (*AccountClaims, error) {
 // (the account public key that delegated it), and returns the claims.
 // Expiry and activation checks belong to the Verifier.
 func VerifyUser(token, accountPubKey string) (*UserClaims, error) {
-	c, err := decodeToken[userBody](token)
+	c, err := decodeToken(token)
 	if err != nil {
 		return nil, err
 	}
-	if c.Valiss.Type != userType {
-		return nil, fmt.Errorf("valiss: not a user token (type %q)", c.Valiss.Type)
+	if c.Type != userType {
+		return nil, fmt.Errorf("valiss: not a user token (type %q)", c.Type)
 	}
 	if c.Issuer != accountPubKey {
 		return nil, errors.New("valiss: user token not signed by the expected account")
@@ -415,9 +415,9 @@ func VerifyUser(token, accountPubKey string) (*UserClaims, error) {
 	return &UserClaims{
 		Claims: claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
 		Name:   nameOf(c.Name, c.Subject),
-		Epoch:  c.Valiss.Epoch,
-		Bearer: c.Valiss.Bearer,
-		Ext:    c.Valiss.Ext,
+		Epoch:  c.Epoch,
+		Bearer: c.Bearer,
+		Ext:    c.Ext,
 	}, nil
 }
 
@@ -425,7 +425,7 @@ func VerifyUser(token, accountPubKey string) (*UserClaims, error) {
 // signature is checked against the token's own embedded issuer only. For
 // inspection and tooling; servers must use VerifyAccount or VerifyUser.
 func Decode(token string) (*Claims, error) {
-	c, err := decodeToken[struct{}](token)
+	c, err := decodeToken(token)
 	if err != nil {
 		return nil, err
 	}
@@ -471,7 +471,7 @@ func (c *Claims) NotYetValid(now time.Time, skew time.Duration) bool {
 // token's own signature against it. It does not establish trust: the caller
 // must still verify the issuer's place in the chain.
 func IssuerOf(token string) (string, error) {
-	c, err := decodeToken[struct{}](token)
+	c, err := decodeToken(token)
 	if err != nil {
 		return "", err
 	}

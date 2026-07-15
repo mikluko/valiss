@@ -9,6 +9,32 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-07-15
+
+### Changed
+
+- **Breaking:** the module path is now `valiss.dev/valiss` (was
+  `github.com/mikluko/valiss`), served as a vanity import from the project
+  domain. Update imports to `valiss.dev/valiss`. Releases before this one
+  declared the old path and do not resolve under the new one.
+
+### Added
+
+- A wire-format version discriminator, so future spec versions can coexist
+  with this one. The current wire version is **1**. A verifier reads the
+  version before parsing an artifact and dispatches to the matching decoder or
+  rejects an unknown version cleanly:
+  - Tokens carry `"ver":1` in the JWT header.
+  - Creds files carry a `VALISS-CREDS-VERSION: 1` header line.
+  - Request signatures bind a `valiss-req-v1` tag into the signed bytes, so a
+    verifier fails closed on any other version.
+
+### Breaking
+
+- Tokens, creds files, and request signatures minted before this release lack
+  the version discriminator and no longer verify; reissue them. The wire layout
+  is otherwise unchanged.
+
 ## [0.11.0] - 2026-07-13
 
 ### Added
@@ -235,7 +261,7 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 - **Breaking.** Scopes, the `call:` convention, `WithMethodScope`, and
   `WithPathScope`. Authorization lives entirely in typed extensions.
 - The Homebrew formula is retired; install as a library with
-  `go get github.com/mikluko/valiss` and run the example CLI via
+  `go get valiss.dev/valiss` and run the example CLI via
   `go run ./examples/minter`.
 
 *Migration:* reissue tokens (wire format changed); replace scope-based
@@ -313,17 +339,18 @@ tokens are all incompatible with 0.3.0; reissue tokens and creds.
   request signature, then hand the tenant identity to the handler. Library
   under `pkg/` (token, creds, grpcauth, httpauth) with a stateless CLI.
 
-[Unreleased]: https://github.com/mikluko/valiss/compare/v0.11.0...HEAD
-[0.11.0]: https://github.com/mikluko/valiss/compare/v0.10.0...v0.11.0
-[0.10.0]: https://github.com/mikluko/valiss/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/mikluko/valiss/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/mikluko/valiss/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/mikluko/valiss/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/mikluko/valiss/compare/v0.5.1...v0.6.0
-[0.5.1]: https://github.com/mikluko/valiss/compare/v0.5.0...v0.5.1
-[0.5.0]: https://github.com/mikluko/valiss/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/mikluko/valiss/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/mikluko/valiss/compare/v0.2.1...v0.3.0
-[0.2.1]: https://github.com/mikluko/valiss/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/mikluko/valiss/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/mikluko/valiss/releases/tag/v0.1.0
+[Unreleased]: https://github.com/valiss-dev/valiss-go/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/valiss-dev/valiss-go/compare/v0.11.0...v0.12.0
+[0.11.0]: https://github.com/valiss-dev/valiss-go/compare/v0.10.0...v0.11.0
+[0.10.0]: https://github.com/valiss-dev/valiss-go/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/valiss-dev/valiss-go/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/valiss-dev/valiss-go/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/valiss-dev/valiss-go/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/valiss-dev/valiss-go/compare/v0.5.1...v0.6.0
+[0.5.1]: https://github.com/valiss-dev/valiss-go/compare/v0.5.0...v0.5.1
+[0.5.0]: https://github.com/valiss-dev/valiss-go/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/valiss-dev/valiss-go/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/valiss-dev/valiss-go/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/valiss-dev/valiss-go/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/valiss-dev/valiss-go/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/valiss-dev/valiss-go/releases/tag/v0.1.0

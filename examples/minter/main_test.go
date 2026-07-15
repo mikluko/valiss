@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 // keygenPair runs cmdKeygen and parses its stdout back into a pair.

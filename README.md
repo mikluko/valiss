@@ -294,7 +294,7 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
 
 ## Layout
 
-- root (`github.com/mikluko/valiss`) — token issue/verify (account, user,
+- root (`valiss.dev/valiss`) — token issue/verify (account, user,
   and message level), request sign/verify, allowlist, the request `Verifier`,
   extension plumbing, and `IdentityFromContext`
 - `creds` — client creds file (tokens + seed in one marker-delimited file)

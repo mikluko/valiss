@@ -23,9 +23,9 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/contrib/grpcsig"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/contrib/grpcsig"
+	"valiss.dev/valiss/creds"
 )
 
 func main() {

@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 
-	"github.com/mikluko/valiss"
+	"valiss.dev/valiss"
 )
 
 // negotiationHarness runs a real bufconn server so trailer semantics are

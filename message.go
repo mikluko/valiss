@@ -105,12 +105,12 @@ func IssueMessage(user nkeys.KeyPair, opts ...IssueOption) (string, error) {
 			return "", err
 		}
 	}
-	return encodeToken(user, &wire[messageBody]{
+	return encodeV1(user, &wireV1[messageBodyV1]{
 		Subject:   pub,
 		Audience:  cfg.audience,
 		Expires:   cfg.expires,
 		NotBefore: cfg.notBefore,
-		Valiss: messageBody{
+		Valiss: messageBodyV1{
 			Type:     messageType,
 			Epoch:    cfg.epoch,
 			Checksum: cfg.checksum,
@@ -124,7 +124,7 @@ func IssueMessage(user nkeys.KeyPair, opts ...IssueOption) (string, error) {
 // broken. No trust anchor is available at mint time, so the account token is
 // only checked for self-consistency; VerifyMessage roots the chain in the
 // operator key.
-func checkChain(ch *messageChain, emitterPub string) error {
+func checkChain(ch *messageChainV1, emitterPub string) error {
 	issuer, err := IssuerOf(ch.Account)
 	if err != nil {
 		return fmt.Errorf("valiss: chain account token: %w", err)
@@ -153,7 +153,7 @@ type verifyMessageConfig struct {
 	hasPayload    bool
 	operatorToken string
 	hasOperator   bool
-	chain         *messageChain
+	chain         *messageChainV1
 }
 
 // VerifyMessageOption customizes VerifyMessage.
@@ -215,7 +215,7 @@ func WithOperatorPolicy(operatorToken string) VerifyMessageOption {
 // mismatch is an error.
 func WithChainTokens(accountToken, userToken string) VerifyMessageOption {
 	return func(c *verifyMessageConfig) {
-		c.chain = &messageChain{Account: accountToken, User: userToken}
+		c.chain = &messageChainV1{Account: accountToken, User: userToken}
 	}
 }
 
@@ -287,12 +287,12 @@ func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *ve
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	c, err := decodeToken[messageBody](token)
+	c, err := decodeToken(token)
 	if err != nil {
 		return nil, err
 	}
-	if c.Valiss.Type != messageType {
-		return nil, fmt.Errorf("valiss: not a message token (type %q)", c.Valiss.Type)
+	if c.Type != messageType {
+		return nil, fmt.Errorf("valiss: not a message token (type %q)", c.Type)
 	}
 	if c.Issuer != c.Subject {
 		return nil, errors.New("valiss: message token not self-signed by its user key")
@@ -300,7 +300,7 @@ func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *ve
 	if !nkeys.IsValidPublicUserKey(c.Subject) {
 		return nil, errors.New("valiss: message token subject is not a user public key")
 	}
-	chain := c.Valiss.Chain
+	chain := c.Chain
 	switch {
 	case chain == nil && cfg.chain == nil:
 		return nil, ErrNoChain
@@ -331,22 +331,22 @@ func verifyMessage(token string, opts []VerifyMessageOption, anchor func(cfg *ve
 		if operator.NotYetValid(at, cfg.skew) {
 			return nil, errors.New("valiss: operator token not yet valid")
 		}
-		if c.Valiss.Epoch != operator.Epoch {
-			return nil, fmt.Errorf("valiss: message token epoch %d, trust domain epoch %d", c.Valiss.Epoch, operator.Epoch)
+		if c.Epoch != operator.Epoch {
+			return nil, fmt.Errorf("valiss: message token epoch %d, trust domain epoch %d", c.Epoch, operator.Epoch)
 		}
 	}
-	if c.Valiss.Epoch != account.Epoch {
-		return nil, fmt.Errorf("valiss: message token epoch %d, account token epoch %d", c.Valiss.Epoch, account.Epoch)
+	if c.Epoch != account.Epoch {
+		return nil, fmt.Errorf("valiss: message token epoch %d, account token epoch %d", c.Epoch, account.Epoch)
 	}
-	if c.Valiss.Epoch != user.Epoch {
-		return nil, fmt.Errorf("valiss: message token epoch %d, user token epoch %d", c.Valiss.Epoch, user.Epoch)
+	if c.Epoch != user.Epoch {
+		return nil, fmt.Errorf("valiss: message token epoch %d, user token epoch %d", c.Epoch, user.Epoch)
 	}
 	claims := MessageClaims{
 		Claims:   claimsOf(c.ID, c.Issuer, c.Subject, c.IssuedAt, c.Expires, c.NotBefore),
 		Audience: c.Audience,
-		Checksum: c.Valiss.Checksum,
-		Epoch:    c.Valiss.Epoch,
-		Ext:      c.Valiss.Ext,
+		Checksum: c.Checksum,
+		Epoch:    c.Epoch,
+		Ext:      c.Ext,
 		Account:  account,
 		User:     user,
 		Operator: operator,

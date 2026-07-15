@@ -16,9 +16,9 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/contrib/httpsig"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/contrib/httpsig"
+	"valiss.dev/valiss/creds"
 )
 
 func main() {

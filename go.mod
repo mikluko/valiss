@@ -1,4 +1,4 @@
-module github.com/mikluko/valiss
+module valiss.dev/valiss
 
 go 1.26.4
 

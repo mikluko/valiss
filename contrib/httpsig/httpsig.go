@@ -16,8 +16,8 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 // Audience is the canonical destination identity of an HTTP request a

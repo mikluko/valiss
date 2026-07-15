@@ -32,8 +32,8 @@ import (
 	"github.com/nats-io/nkeys"
 	"gopkg.in/yaml.v3"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/creds"
 )
 
 func main() {

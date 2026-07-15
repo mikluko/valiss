@@ -15,9 +15,9 @@ import (
 
 	"github.com/nats-io/nkeys"
 
-	"github.com/mikluko/valiss"
-	"github.com/mikluko/valiss/contrib/httpauth"
-	"github.com/mikluko/valiss/creds"
+	"valiss.dev/valiss"
+	"valiss.dev/valiss/contrib/httpauth"
+	"valiss.dev/valiss/creds"
 )
 
 // queryFilters is a domain-specific extension: the set of filters the
