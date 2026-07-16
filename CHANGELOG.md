@@ -9,6 +9,8 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-07-16
+
 ### Added
 
 - Framework adapters for Gin (`contrib/ginauth`) and Echo (`contrib/echoauth`):
@@ -363,7 +365,8 @@ tokens are all incompatible with 0.3.0; reissue tokens and creds.
   request signature, then hand the tenant identity to the handler. Library
   under `pkg/` (token, creds, grpcauth, httpauth) with a stateless CLI.
 
-[Unreleased]: https://github.com/valiss-dev/valiss-go/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/valiss-dev/valiss-go/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/valiss-dev/valiss-go/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/valiss-dev/valiss-go/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/valiss-dev/valiss-go/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/valiss-dev/valiss-go/compare/v0.9.0...v0.10.0
