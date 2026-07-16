@@ -300,6 +300,8 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
 - `creds` — client creds file (tokens + seed in one marker-delimited file)
 - `contrib/httpauth` — net/http middleware, client transport, HTTP extension
 - `contrib/grpcauth` — gRPC interceptors, per-RPC credentials, gRPC extension
+- `contrib/ginauth`, `contrib/echoauth` — Gin and Echo middleware over the
+  httpauth verification core (client side stays `httpauth.NewTransport`)
 - `contrib/httpsig` — message-token transport and middleware for net/http
 - `contrib/grpcsig` — message-token unary interceptors for gRPC
 - `examples/` — runnable end-to-end demos, including the manifest-driven
@@ -337,6 +339,15 @@ mw := httpauth.NewMiddleware(valiss.NewVerifier(operatorPubKey, allowlist))
 srv := &http.Server{Handler: mw(mux)}
 ```
 
+Any router that takes standard `func(http.Handler) http.Handler` middleware
+(chi, gorilla/mux, ...) uses `httpauth.NewMiddleware` as-is. Gin and Echo get
+native middleware:
+
+```go
+engine.Use(ginauth.NewMiddleware(verifier))  // Gin;  id, _ := ginauth.IdentityFrom(c)
+app.Use(echoauth.NewMiddleware(verifier))    // Echo; id, _ := echoauth.IdentityFrom(c)
+```
+
 Client (HTTP):
 
 ```go
@@ -345,7 +356,8 @@ transport, _ := httpauth.NewTransport(c, nil)
 client := &http.Client{Transport: transport}
 ```
 
-Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`;
+Runnable versions: `go run ./examples/grpcauth`, `go run ./examples/httpauth`,
+`go run ./examples/ginauth`, `go run ./examples/echoauth`;
 `go run ./examples/httpsig` and `go run ./examples/grpcsig` demo per-message
 proofs of origin end to end, including post-expiry re-verification of a
 stored message and replay/tamper rejection.

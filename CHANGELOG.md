@@ -9,6 +9,20 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+### Added
+
+- Framework adapters for Gin (`contrib/ginauth`) and Echo (`contrib/echoauth`):
+  native middleware over the httpauth verification core, with `IdentityFrom`
+  helpers on the framework contexts. The client side remains the
+  framework-agnostic `httpauth.NewTransport`. Runnable demos:
+  `examples/ginauth`, `examples/echoauth`.
+- `httpauth.Authenticate`: the exported verification core behind
+  `httpauth.NewMiddleware` — credential extraction, verification, and
+  fail-closed extension enforcement over a plain `*http.Request` — for
+  framework adapters and custom server flows. Rejections are `*httpauth.Error`
+  carrying the HTTP status; `httpauth.StatusOf` maps any error to a response
+  status (401 unless the error says otherwise).
+
 ## [0.12.0] - 2026-07-15
 
 ### Changed
