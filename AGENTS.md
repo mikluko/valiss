@@ -47,6 +47,7 @@ Layout:
 - Error messages are prefixed `valiss:`.
 - Key levels are strict: operator keys sign account tokens, account keys sign user tokens, user keys sign message tokens, never the reverse; every token's `sub` is a key of the right type. Do not weaken account keys to user-type keys; delegation depends on every tenant holding an account key.
 - Message tokens are proofs of origin, never credentials: possession grants nothing, `Verifier.VerifyRequest` does not accept them, and no verify path may treat one as bearer authentication.
+- Contrib integrations keep the two concerns in separate packages per platform — `<platform>auth` (credentials) and `<platform>sig` (message tokens) — and framework adapters wrap the exported verification cores (`httpauth.Authenticate`, `httpsig.Receiver`) rather than reimplementing verification (org ADR 0013).
 - All authorization lives in typed extension claims (transport or domain); there is no scope-string mechanism. Base `Claims` stays RFC 7519-only; anything valiss-specific goes on the typed claim structs or into extensions.
 - Terminology: *creds* = the credentials file (subject token + seed); *bundle* = user creds that also carry the upstream account token.
 - Tests use `valiss.WithClock` to inject time; prefer that over sleeping.
