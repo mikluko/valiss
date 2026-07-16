@@ -22,6 +22,16 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
   framework adapters and custom server flows. Rejections are `*httpauth.Error`
   carrying the HTTP status; `httpauth.StatusOf` maps any error to a response
   status (401 unless the error says otherwise).
+- Message-token adapters for Gin (`contrib/ginsig`) and Echo
+  (`contrib/echosig`): native receiving middleware over the httpsig core,
+  including the chain-negotiation signal on the frameworks' rejection paths,
+  with `MessageFrom` helpers. Emitters stay on `httpsig.NewTransport`.
+- `httpsig.Receiver` (`NewReceiver`/`NewKeyringReceiver`): the exported
+  receiving core behind `httpsig.NewMiddleware` — token extraction, body
+  binding, chain-negotiation state, verification — with `*httpsig.Error`
+  rejections, `httpsig.StatusOf`, and `httpsig.RequireChain` for adapters.
+  `MiddlewareOption` now configures the `Receiver`; the options' behavior is
+  unchanged.
 
 ## [0.12.0] - 2026-07-15
 

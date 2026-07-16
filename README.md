@@ -131,6 +131,10 @@ srv := &http.Server{Handler: mw(hookHandler)}
 // in the handler: claims, ok := valiss.MessageFromContext(r.Context())
 ```
 
+Gin and Echo receivers use the native middleware over the same core:
+`ginsig.NewMiddleware(operatorPub)` / `echosig.NewMiddleware(operatorPub)`,
+claims via `ginsig.MessageFrom(c)` / `echosig.MessageFrom(c)`.
+
 `contrib/grpcsig`: unary interceptors on both ends (audience = full method,
 checksum over the request message's deterministic protobuf encoding — keep
 the protobuf runtime versions of emitter and receiver in step):
@@ -304,6 +308,8 @@ pair with TLS and a short validity window. Accounts never get bearer tokens.
   httpauth verification core (client side stays `httpauth.NewTransport`)
 - `contrib/httpsig` — message-token transport and middleware for net/http
 - `contrib/grpcsig` — message-token unary interceptors for gRPC
+- `contrib/ginsig`, `contrib/echosig` — message-token middleware for Gin and
+  Echo over the httpsig receiving core (emitters stay `httpsig.NewTransport`)
 - `examples/` — runnable end-to-end demos, including the manifest-driven
   `examples/minter` credential minting tool
 
