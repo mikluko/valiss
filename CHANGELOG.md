@@ -9,6 +9,16 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-17
+
+### Security
+
+- Bump indirect quic-go dependency to v0.59.1 (pulled in via gin), backporting
+  quic-go/quic-go#5642 for HTTP/3 trailer validation. Trailers are
+  signature-coverable request fields, so malformed trailer handling in the
+  transport stack is treated as security-relevant for valiss consumers that
+  route signed HTTP traffic over HTTP/3.
+
 ## [0.13.0] - 2026-07-16
 
 ### Added
@@ -365,7 +375,8 @@ tokens are all incompatible with 0.3.0; reissue tokens and creds.
   request signature, then hand the tenant identity to the handler. Library
   under `pkg/` (token, creds, grpcauth, httpauth) with a stateless CLI.
 
-[Unreleased]: https://github.com/valiss-dev/valiss-go/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/valiss-dev/valiss-go/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/valiss-dev/valiss-go/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/valiss-dev/valiss-go/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/valiss-dev/valiss-go/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/valiss-dev/valiss-go/compare/v0.10.0...v0.11.0
