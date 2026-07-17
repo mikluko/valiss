@@ -749,6 +749,73 @@ func msgChainlessWithChain(k keyset, accTok, usrTok string, exp time.Time) strin
 	))
 }
 
+// -------- generation vectors (verify_generation_floor) --------
+
+// generationCases exercises the entity generation-floor extension (ADR 0022):
+// an account token stamped with the issuing operator's own generation through
+// the standard extension plumbing, checked against a per-issuer floor. The four
+// behaviors the floor must exhibit are covered: a stamp at or above the floor is
+// accepted, a stamp below it is rejected, an unstamped token is accepted
+// whatever the floor, and a non-enforcing verifier accepts any stamp. The op is
+// verify-side and needs no request signature: it verifies the account token and
+// applies the focused floor decision (valiss.CheckGenerationFloor).
+func generationCases(k keyset) file {
+	stamp := func(gen uint64) string {
+		return must(valiss.IssueAccount(k.op, k.accPub, valiss.WithName("acme"),
+			valiss.WithExtension(valiss.GenerationExt{Generation: gen})))
+	}
+	accGen8 := stamp(8)
+	accGen9 := stamp(9)
+	accGen7 := stamp(7)
+	accGen1 := stamp(1)
+	// A stamp carrying the optional, opaque template digest alongside the
+	// generation; the library transports the digest untouched and it never
+	// bears on the floor decision.
+	accGen8Tpl := must(valiss.IssueAccount(k.op, k.accPub, valiss.WithName("acme"),
+		valiss.WithExtension(valiss.GenerationExt{Generation: 8, Template: "a1b2c3"})))
+	accUnstamped := must(valiss.IssueAccount(k.op, k.accPub, valiss.WithName("acme")))
+
+	// floor applies to the token's issuing entity (its iss key); the runner
+	// keys the floor by that entity. enforce toggles WithGenerationFloors.
+	args := func(floor int, enforce bool) map[string]any {
+		return map[string]any{"operator_pub": k.opPub, "floor": floor, "enforce": enforce}
+	}
+
+	cases := []kase{
+		{
+			ID: "generation/stamped-at-floor", Desc: "a stamped token whose generation equals its issuer's floor is accepted",
+			Op: "verify_generation_floor", Input: map[string]any{"token": accGen8}, Args: args(8, true),
+			Expect: expect{OK: true, Claims: map[string]any{"subject": k.accPub, "generation": 8}},
+		},
+		{
+			ID: "generation/stamped-above-floor", Desc: "a stamped token whose generation exceeds its issuer's floor is accepted",
+			Op: "verify_generation_floor", Input: map[string]any{"token": accGen9}, Args: args(8, true),
+			Expect: expect{OK: true, Claims: map[string]any{"subject": k.accPub, "generation": 9}},
+		},
+		{
+			ID: "generation/stamped-below-floor", Desc: "a stamped token whose generation is below its issuer's floor is rejected",
+			Op: "verify_generation_floor", Input: map[string]any{"token": accGen7}, Args: args(8, true),
+			Expect: expect{OK: false, Reason: "generation_below_floor"},
+		},
+		{
+			ID: "generation/unstamped-ignores-floor", Desc: "an unstamped token is accepted regardless of the floor (optional at issuer)",
+			Op: "verify_generation_floor", Input: map[string]any{"token": accUnstamped}, Args: args(8, true),
+			Expect: expect{OK: true, Claims: map[string]any{"subject": k.accPub}},
+		},
+		{
+			ID: "generation/non-enforcing-accepts-low-stamp", Desc: "a verifier not enforcing floors accepts a stamp below the floor (optional at verifier)",
+			Op: "verify_generation_floor", Input: map[string]any{"token": accGen1}, Args: args(8, false),
+			Expect: expect{OK: true, Claims: map[string]any{"subject": k.accPub, "generation": 1}},
+		},
+		{
+			ID: "generation/template-digest-opaque", Desc: "the optional template digest travels alongside the generation and does not bear on the floor decision",
+			Op: "verify_generation_floor", Input: map[string]any{"token": accGen8Tpl}, Args: args(8, true),
+			Expect: expect{OK: true, Claims: map[string]any{"subject": k.accPub, "generation": 8}},
+		},
+	}
+	return file{Spec: 1, Cases: cases}
+}
+
 // -------- keys.json --------
 
 func keysFile(k keyset) map[string]any {
@@ -812,6 +879,7 @@ func main() {
 		{"signatures.json", signatureCases(k)},
 		{"creds.json", credsCases(k)},
 		{"messages.json", messageCases(k)},
+		{"generations.json", generationCases(k)},
 	}
 	for _, o := range outputs {
 		if err := writeJSON(target, o.name, o.v); err != nil {

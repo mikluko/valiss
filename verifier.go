@@ -158,6 +158,7 @@ type Verifier struct {
 	operator       *OperatorClaims
 	operatorErr    error
 	replay         ReplayCache
+	floors         FloorList
 }
 
 // VerifierOption configures a Verifier.
@@ -207,6 +208,23 @@ func WithAccountTokenResolver(fn AccountTokenResolver) VerifierOption {
 // land inside a valid timestamp window.
 func WithReplayCache(cache ReplayCache) VerifierOption {
 	return func(v *Verifier) { v.replay = cache }
+}
+
+// WithGenerationFloors enables entity generation-floor enforcement: the
+// verifier reads per-entity floors from its allowlist when the allowlist
+// implements FloorList, and rejects a stamped token (GenerationExt) whose
+// generation is below its issuing entity's floor. A token that carries no
+// generation stamp is never rejected by a floor. Without this option the
+// verifier ignores generation stamps entirely, so the extension stays optional
+// at the verifier and adding it changes no existing outcome. Floors compose
+// with the per-jti allowlist: a token can still be struck individually while a
+// floor handles the wholesale case.
+func WithGenerationFloors() VerifierOption {
+	return func(v *Verifier) {
+		if fl, ok := v.allowlist.(FloorList); ok {
+			v.floors = fl
+		}
+	}
 }
 
 // WithOperatorToken supplies the trust domain's self-signed operator token
@@ -339,6 +357,9 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 	if !v.allowlist.Allowed(account.ID) {
 		return nil, errors.New("valiss: account token not recognized")
 	}
+	if err := CheckGenerationFloor(account.Ext, account.Issuer, v.floors); err != nil {
+		return nil, err
+	}
 	id := &Identity{Account: account, Operator: operator}
 	if req.UserToken != "" {
 		user, err := VerifyUser(req.UserToken, account.Subject)
@@ -353,6 +374,9 @@ func (v *Verifier) VerifyRequest(req Request) (*Identity, error) {
 		}
 		if user.NotYetValid(now, v.skew) {
 			return nil, errors.New("valiss: user token not yet valid")
+		}
+		if err := CheckGenerationFloor(user.Ext, user.Issuer, v.floors); err != nil {
+			return nil, err
 		}
 		id.User = user
 	}
