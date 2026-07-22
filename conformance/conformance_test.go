@@ -70,6 +70,9 @@ var reasonSubstrings = map[string][]string{
 	"bad_signature_encoding": {"bad request signature encoding"},        // sign.go:71-72
 	"bad_request_signature":  {"request signature verification failed"}, // sign.go:79-80
 
+	// entity generation floor (ADR 0022)
+	"generation_below_floor": {"below floor"}, // generation.go CheckGenerationFloor
+
 	// §7.4 message-specific
 	"no_chain":            {"carries no chain"},                   // message.go:22/305
 	"chain_mismatch":      {"differs from the supplied chain"},    // message.go:309
@@ -127,7 +130,7 @@ func TestConformance(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Skipf("vectors dir %q not found (set VALISS_VECTORS_DIR to run): %v", dir, err)
 	}
-	for _, name := range []string{"tokens.json", "signatures.json", "creds.json", "messages.json"} {
+	for _, name := range []string{"tokens.json", "signatures.json", "creds.json", "messages.json", "generations.json"} {
 		path := filepath.Join(dir, name)
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -209,6 +212,32 @@ func invoke(t *testing.T, c vectorCase) (map[string]any, error) {
 		}
 		return map[string]any{}, nil
 
+	case "verify_generation_floor":
+		ac, err := valiss.VerifyAccount(str(c.Input, "token"), str(c.Args, "operator_pub"))
+		if err != nil {
+			return nil, err
+		}
+		// The floor is keyed by the token's issuing entity; enforce toggles
+		// whether the verifier applies floors at all (optional at the verifier).
+		var floors valiss.FloorList
+		if enforce, _ := c.Args["enforce"].(bool); enforce {
+			al := valiss.NewStaticAllowlist()
+			al.SetFloor(ac.Issuer, uint64(numArg(c.Args, "floor")))
+			floors = al
+		}
+		if err := valiss.CheckGenerationFloor(ac.Ext, ac.Issuer, floors); err != nil {
+			return nil, err
+		}
+		out := map[string]any{"subject": ac.Subject}
+		gen, ok, err := valiss.ExtOf[valiss.GenerationExt](ac.Ext)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			out["generation"] = gen.Generation
+		}
+		return out, nil
+
 	case "parse_creds":
 		cr, err := creds.Parse(str(c.Input, "creds"))
 		if err != nil {
@@ -267,6 +296,19 @@ func str(m map[string]any, key string) string {
 		return ""
 	}
 	return s
+}
+
+// numArg reads a numeric case argument. JSON numbers decode to float64; an
+// integer literal set by a Go-side test reads directly.
+func numArg(m map[string]any, key string) int {
+	switch n := m[key].(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	default:
+		return 0
+	}
 }
 
 func parseTime(t *testing.T, s string) time.Time {

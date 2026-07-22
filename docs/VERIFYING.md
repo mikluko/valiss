@@ -46,7 +46,11 @@ The `valiss` section is discriminated by its `type` field:
   `chain` is `{account, user}`: the embedded provenance tokens, verbatim.
 
 `ext` is an object of named, consumer-defined claim payloads; transport
-carries them opaquely.
+carries them opaquely. One name is reserved by the spec: `gen`, the generation
+floor extension (`{gen: uint, tpl?: string}`, SPEC-1 §3.9). It is optional and a
+minimal verifier ignores it, which is exactly the correct behavior for a
+verifier that does not enforce generation floors; enforcement is opt-in and
+described in SPEC-1 §6.13.
 
 ## Signature
 

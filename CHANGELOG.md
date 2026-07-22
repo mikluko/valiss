@@ -9,6 +9,26 @@ breaking changes may land in minor releases and are flagged **Breaking** below.
 
 ## [Unreleased]
 
+### Added
+
+- Entity generation-floor extension (`GenerationExt`, name `gen`; ADR 0022): an
+  optional, self-naming typed claim that stamps a token with the issuing
+  entity's own generation (an unsigned counter) plus an optional opaque template
+  digest. Mint it through the standard `valiss.WithExtension` plumbing and
+  recover it with `valiss.ExtOf`. Backwards compatible: the stamp is optional at
+  the issuer and unstamped tokens verify exactly as before.
+- Verifier-side floor enforcement (`Verifier` option `WithGenerationFloors`)
+  composing with the allowlist: `StaticAllowlist` now carries optional per-entity
+  generation floors (`SetFloor`/`SetFloors`/`Floor`, the `FloorList` interface),
+  and an enforcing verifier rejects a stamped token whose generation is below its
+  issuing entity's floor. Enforcement is opt-in: without `WithGenerationFloors`
+  the stamp is ignored, and a token carrying no stamp is never rejected by a
+  floor. `CheckGenerationFloor` exposes the focused per-token decision for tooling.
+- Conformance vectors for the generation floor (`spec/vectors/generations.json`,
+  op `verify_generation_floor`): stamped-at/above-floor accepted, stamped-below
+  rejected, unstamped accepted regardless of floor, and non-enforcing verifier
+  accepting any stamp.
+
 ## [0.13.1] - 2026-07-17
 
 ### Security
